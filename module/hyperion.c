@@ -1,8 +1,10 @@
+#include "hyperion.h"
 #include <linux/device.h>
 #include <linux/fs.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <sys/ioctl.h>
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Muhamad Huseyn Salman");
@@ -64,6 +66,54 @@ static struct file_operations fops = {.open = dev_open,
                                       .write = dev_write,
                                       .unlocked_ioctl = dev_ioctl};
 
+/* module/hyperion.c — IOCTL handler */
+
+static long dev_ioctl(struct file *filep, unsigned int cmd, unsigned long arg) {
+  int ret = 0;
+
+  /* Verify the command belongs to us */
+  if (_IOC_TYPE(cmd) != HYPERION_MAGIC) {
+    printk(KERN_WARNING "[*] Hyperion: unknown IOCTL type\n");
+    return -ENOTTY;
+  }
+
+  switch (cmd) {
+
+  case IOCTL_INIT_VMX:
+    printk(KERN_INFO "[*] Hyperion: IOCTL_INIT_VMX received\n");
+    if (initialize_vmx())
+      printk(KERN_INFO "[*] Hyperion: VMX initialized successfully\n");
+    else {
+      printk(KERN_ERR "[*] Hyperion: VMX initialization failed\n");
+      ret = -EPERM;
+    }
+    break;
+
+  case IOCTL_TERMINATE_VMX:
+    printk(KERN_INFO "[*] Hyperion: IOCTL_TERMINATE_VMX received\n");
+    terminate_vmx();
+    break;
+
+  case IOCTL_SEND_BUFFER: {
+    char buf[256];
+    if (copy_from_user(buf, (char __user *)arg, sizeof(buf))) {
+      ret = -EFAULT;
+      break;
+    }
+    printk(KERN_INFO "[*] Hyperion: received buffer from userspace: %s\n", buf);
+    break;
+  }
+
+  default:
+    printk(KERN_WARNING "[*] Hyperion: unrecognized IOCTL 0x%x\n", cmd);
+    ret = -ENOTTY;
+    break;
+  }
+
+  return ret;
+}
+
+/*-------- Init and Exit ---------*/
 static int __init hypervisor_init(void) {
   printk(KERN_INFO "Hyperion: module loading\n");
 

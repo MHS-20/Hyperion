@@ -1,9 +1,10 @@
+#include "../module/hyperion.h"
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <unistd.h>
-
 #define DEVICE_PATH "/dev/hyperion"
 
 void get_cpu_vendor(char *vendor) {
@@ -62,6 +63,14 @@ int main(void) {
     perror("[!] Failed to open " DEVICE_PATH);
     return 1;
   }
+
+  /* Initialize VMX across all logical processors */
+  if (ioctl(fd, IOCTL_INIT_VMX) < 0) {
+    perror("[!] IOCTL_INIT_VMX failed");
+    close(fd);
+    return 1;
+  }
+  printf("[*] VMX initialized successfully.\n");
 
   printf("[*] Device opened successfully. Press Enter to exit...\n");
   getchar();
