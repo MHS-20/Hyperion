@@ -95,3 +95,52 @@ bool allocate_vmxon_region(struct virtual_machine_state *guest_state) {
   guest_state->vmxon_region = aligned_phys;
   return true;
 }
+
+bool allocate_vmcs_region(struct virtual_machine_state *guest_state) {
+  union ia32_vmx_basic_msr basic;
+  void *buffer;
+  uint64_t phys_buffer;
+  uint64_t aligned_phys;
+  void *aligned_virt;
+  uint8_t status;
+
+  buffer = kmalloc(2 * VMCS_SIZE, GFP_KERNEL);
+  if (!buffer) {
+    printk(KERN_ERR "[*] Hyperion: failed to allocate VMCS region\n");
+    return false;
+  }
+
+  memset(buffer, 0, 2 * VMCS_SIZE);
+
+  phys_buffer = virtual_to_physical(buffer);
+  aligned_phys =
+      (phys_buffer + ALIGNMENT_PAGE - 1) & ~(uint64_t)(ALIGNMENT_PAGE - 1);
+  aligned_virt = physical_to_virtual(aligned_phys);
+
+  printk(KERN_INFO "[*] Hyperion: VMCS virtual buffer @ 0x%llx\n",
+         (uint64_t)buffer);
+  printk(KERN_INFO "[*] Hyperion: VMCS aligned virtual @ 0x%llx\n",
+         (uint64_t)aligned_virt);
+  printk(KERN_INFO "[*] Hyperion: VMCS aligned physical @ 0x%llx\n",
+         aligned_phys);
+
+  /* Write the VMCS revision identifier before VMPTRLD */
+  rdmsrl(MSR_IA32_VMX_BASIC, basic.all);
+  *(uint32_t *)aligned_virt = basic.fields.revision_identifier;
+
+  /* VMPTRLD: make this VMCS current and active */
+  __asm__ volatile("vmptrld %1\n\t"
+                   "setna %0\n\t"
+                   : "=qm"(status)
+                   : "m"(aligned_phys)
+                   : "cc", "memory");
+
+  if (status) {
+    printk(KERN_ERR "[*] Hyperion: VMPTRLD failed with status %d\n", status);
+    kfree(buffer);
+    return false;
+  }
+
+  guest_state->vmcs_region = aligned_phys;
+  return true;
+}
