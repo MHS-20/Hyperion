@@ -1,8 +1,11 @@
-CC = gcc
-TARGET = hyperion-user
+CC      = gcc
+CFLAGS  = -Wall -I../module
+TARGET  = hyperion-user
 
-all:
-	$(CC) -o $(TARGET) hyperion-user.c
+all: $(TARGET)
+
+$(TARGET): hyperion-user.c
+	$(CC) $(CFLAGS) -o $(TARGET) hyperion-user.c
 
 clean:
 	rm -f $(TARGET)

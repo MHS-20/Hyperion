@@ -1,5 +1,9 @@
+#include "hyperion.h"
+#include <asm/msr-index.h>
 #include <asm/msr.h>
 #include <linux/cpumask.h>
+#include <linux/io.h>
+#include <linux/slab.h>
 #include <linux/smp.h>
 
 struct virtual_machine_state *g_guest_state = NULL;
@@ -36,13 +40,13 @@ bool is_vmx_supported(void) {
   }
 
   /* Check IA32_FEATURE_CONTROL MSR */
-  rdmsrl(MSR_IA32_FEATURE_CONTROL, ctrl.all);
+  rdmsrl(MSR_IA32_FEAT_CTL, ctrl.all);
 
   if (!ctrl.fields.lock) {
     /* Lock bit not set — we can write to this MSR to enable VMX */
     ctrl.fields.lock = 1;
     ctrl.fields.enable_vmxon = 1;
-    wrmsrl(MSR_IA32_FEATURE_CONTROL, ctrl.all);
+    wrmsrl(MSR_IA32_FEAT_CTL, ctrl.all);
   } else if (!ctrl.fields.enable_vmxon) {
     printk(KERN_ERR "[*] Hyperion: VMX locked off in BIOS\n");
     return false;
@@ -56,6 +60,14 @@ static void vmx_init_on_cpu(void *info) {
   printk(KERN_INFO "[*] Hyperion: initializing VMX on CPU %d\n", cpu);
 
   enable_vmx_operation();
+
+  /* Ensure VMX is off before trying to turn it on.
+   * VMXOFF will #UD if VMX is not active; the exception table entry
+   * makes the kernel skip faulting VMXOFF silently. */
+  __asm__ volatile("1: vmxoff\n\t"
+                   "2:\n\t"
+                   _ASM_EXTABLE(1b, 2b)
+                   ::: "cc");
 
   if (!allocate_vmxon_region(&g_guest_state[cpu])) {
     printk(KERN_ERR "[*] Hyperion: VMXON region allocation failed on CPU %d\n",
@@ -93,4 +105,32 @@ bool initialize_vmx(void) {
   on_each_cpu(vmx_init_on_cpu, NULL, 1);
 
   return true;
+}
+
+static void vmx_exit_on_cpu(void *info) {
+  int cpu = smp_processor_id();
+  __asm__ volatile("vmxoff\n\t" ::: "cc");
+  printk(KERN_INFO "[*] Hyperion: VMX turned off on CPU %d\n", cpu);
+}
+
+void terminate_vmx(void) {
+  int i;
+
+  printk(KERN_INFO "[*] Hyperion: terminating VMX on all CPUs\n");
+
+  on_each_cpu(vmx_exit_on_cpu, NULL, 1);
+
+  /* Free all per-CPU regions */
+  for (i = 0; i < processor_count; i++) {
+    if (g_guest_state[i].vmxon_alloc)
+      kfree(g_guest_state[i].vmxon_alloc);
+
+    if (g_guest_state[i].vmcs_alloc)
+      kfree(g_guest_state[i].vmcs_alloc);
+  }
+
+  kfree(g_guest_state);
+  g_guest_state = NULL;
+
+  printk(KERN_INFO "[*] Hyperion: VMX terminated successfully\n");
 }

@@ -9,7 +9,6 @@
 #define ALIGNMENT_PAGE 4096
 
 uint64_t virtual_to_physical(void *va) { return (uint64_t)virt_to_phys(va); }
-
 void *physical_to_virtual(uint64_t pa) { return phys_to_virt((phys_addr_t)pa); }
 
 /* IA32_VMX_BASIC MSR layout */
@@ -49,6 +48,8 @@ bool allocate_vmxon_region(struct virtual_machine_state *guest_state) {
     printk(KERN_ERR "[*] Hyperion: failed to allocate VMXON region\n");
     return false;
   }
+
+  guest_state->vmxon_alloc = buffer;
 
   /* Zero out the allocation */
   memset(buffer, 0, 2 * VMXON_SIZE);
@@ -109,6 +110,8 @@ bool allocate_vmcs_region(struct virtual_machine_state *guest_state) {
     printk(KERN_ERR "[*] Hyperion: failed to allocate VMCS region\n");
     return false;
   }
+
+  guest_state->vmcs_alloc = buffer;
 
   memset(buffer, 0, 2 * VMCS_SIZE);
 

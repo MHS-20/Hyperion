@@ -1,10 +1,11 @@
 #include "hyperion.h"
+#include <asm/msr-index.h>
+#include <asm/msr.h>
 #include <linux/device.h>
 #include <linux/fs.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <sys/ioctl.h>
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Muhamad Huseyn Salman");
@@ -17,14 +18,29 @@ static int major_number;
 static struct class *hypervisor_class = NULL;
 static struct device *hypervisor_device = NULL;
 
-static inline void enable_vmx_operation(void) {
-  unsigned long cr4;
+void enable_vmx_operation(void) {
+  unsigned long cr0, cr4;
+  uint64_t cr0_fixed0, cr0_fixed1, cr4_fixed0, cr4_fixed1;
+
+  rdmsrl(MSR_IA32_VMX_CR0_FIXED0, cr0_fixed0);
+  rdmsrl(MSR_IA32_VMX_CR0_FIXED1, cr0_fixed1);
+  rdmsrl(MSR_IA32_VMX_CR4_FIXED0, cr4_fixed0);
+  rdmsrl(MSR_IA32_VMX_CR4_FIXED1, cr4_fixed1);
+
+  __asm__ volatile("mov %%cr0, %0\n\t"
+                   "or  %1,    %0\n\t"
+                   "and %2,    %0\n\t"
+                   "mov %0,    %%cr0\n\t"
+                   : "=&r"(cr0)
+                   : "r"(cr0_fixed0), "r"(cr0_fixed1)
+                   : "memory");
 
   __asm__ volatile("mov %%cr4, %0\n\t"
-                   "or  %1,    %0\n\t" /* Set bit 13 (VMXE) */
+                   "or  %1,    %0\n\t"
+                   "and %2,    %0\n\t"
                    "mov %0,    %%cr4\n\t"
                    : "=&r"(cr4)
-                   : "r"(1UL << 13)
+                   : "r"(cr4_fixed0 | (1UL << 13)), "r"(cr4_fixed1)
                    : "memory");
 }
 
@@ -54,10 +70,7 @@ static ssize_t dev_write(struct file *filep, const char __user *buf, size_t len,
   return len;
 }
 
-static long dev_ioctl(struct file *filep, unsigned int cmd, unsigned long arg) {
-  printk(KERN_INFO "[*] Hyperion: ioctl() called with cmd=0x%x\n", cmd);
-  return 0;
-}
+static long dev_ioctl(struct file *filep, unsigned int cmd, unsigned long arg);
 
 /* File operations exposed to userspace */
 static struct file_operations fops = {.open = dev_open,
@@ -148,6 +161,7 @@ static int __init hypervisor_init(void) {
 
 /* Equivalent to DrvUnload */
 static void __exit hypervisor_exit(void) {
+  terminate_vmx();
   device_destroy(hypervisor_class, MKDEV(major_number, 0));
   class_unregister(hypervisor_class);
   class_destroy(hypervisor_class);
