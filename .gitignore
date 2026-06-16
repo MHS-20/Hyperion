@@ -1,6 +1,8 @@
 .cache
 build/
 
+hyperion-user
+
 # Kernel build artifacts
 *.o
 *.ko

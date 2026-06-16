@@ -15,9 +15,22 @@ static int major_number;
 static struct class *hypervisor_class = NULL;
 static struct device *hypervisor_device = NULL;
 
+static inline void enable_vmx_operation(void) {
+  unsigned long cr4;
+
+  __asm__ volatile("mov %%cr4, %0\n\t"
+                   "or  %1,    %0\n\t" /* Set bit 13 (VMXE) */
+                   "mov %0,    %%cr4\n\t"
+                   : "=&r"(cr4)
+                   : "r"(1UL << 13)
+                   : "memory");
+}
+
+/* --------- File Operations --------*/
 /* Called when userspace opens /dev/my_hypervisor */
 static int dev_open(struct inode *inodep, struct file *filep) {
-  printk(KERN_INFO "Hyperion: device opened\n");
+  enable_vmx_operation();
+  printk(KERN_INFO "[*] Hyperion: VMX Operation Enabled Successfully!\n");
   return 0;
 }
 
@@ -27,13 +40,30 @@ static int dev_release(struct inode *inodep, struct file *filep) {
   return 0;
 }
 
-/* File operations exposed to userspace — expand later for IOCTL */
-static struct file_operations fops = {
-    .open = dev_open,
-    .release = dev_release,
-};
+static ssize_t dev_read(struct file *filep, char __user *buf, size_t len,
+                        loff_t *offset) {
+  printk(KERN_INFO "[*] Hyperion: read() not implemented yet\n");
+  return 0;
+}
 
-/* Equivalent to DriverEntry */
+static ssize_t dev_write(struct file *filep, const char __user *buf, size_t len,
+                         loff_t *offset) {
+  printk(KERN_INFO "[*] Hyperion: write() not implemented yet\n");
+  return len;
+}
+
+static long dev_ioctl(struct file *filep, unsigned int cmd, unsigned long arg) {
+  printk(KERN_INFO "[*] Hyperion: ioctl() called with cmd=0x%x\n", cmd);
+  return 0;
+}
+
+/* File operations exposed to userspace */
+static struct file_operations fops = {.open = dev_open,
+                                      .release = dev_release,
+                                      .read = dev_read,
+                                      .write = dev_write,
+                                      .unlocked_ioctl = dev_ioctl};
+
 static int __init hypervisor_init(void) {
   printk(KERN_INFO "Hyperion: module loading\n");
 
