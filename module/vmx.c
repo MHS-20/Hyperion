@@ -204,3 +204,117 @@ uint64_t vmptrst_instruction(void) {
 
   return vmcs_pa;
 }
+
+/*
+ * VMWRITE wrapper.
+ * field: VMCS field encoding (see the VMCS_FIELDS enum).
+ * value: the value to write to that field.
+ */
+static void vmwrite(uint64_t field, uint64_t value) {
+  __asm__ volatile("vmwrite %1, %0\n\t"
+                   :
+                   : "rm"(field), "r"(value)
+                   : "cc", "memory");
+}
+
+/*
+ * VMREAD wrapper.
+ * field:  VMCS field encoding to read.
+ * value:  pointer to where the read value is stored.
+ */
+static void vmread(uint64_t field, uint64_t *value) {
+  __asm__ volatile("vmread %1, %0\n\t"
+                   : "=rm"(*value)
+                   : "r"(field)
+                   : "cc", "memory");
+}
+
+/* Reading the GDT Base and Limit */
+
+struct gdtr {
+  uint16_t limit;
+  uint64_t base;
+} __attribute__((packed));
+
+static uint64_t get_gdt_base(void) {
+  struct gdtr gdtr;
+  __asm__ volatile("sgdt %0" : "=m"(gdtr));
+  return gdtr.base;
+}
+
+static uint16_t get_gdt_limit(void) {
+  struct gdtr gdtr;
+  __asm__ volatile("sgdt %0" : "=m"(gdtr));
+  return gdtr.limit;
+}
+
+/* Reading the IDT Base and Limit */
+struct idtr {
+  uint16_t limit;
+  uint64_t base;
+} __attribute__((packed));
+
+static uint64_t get_idt_base(void) {
+  struct idtr idtr;
+  __asm__ volatile("sidt %0" : "=m"(idtr));
+  return idtr.base;
+}
+
+static uint16_t get_idt_limit(void) {
+  struct idtr idtr;
+  __asm__ volatile("sidt %0" : "=m"(idtr));
+  return idtr.limit;
+}
+
+/* Reading Segment Registers and System Table Registers */
+static uint16_t get_cs(void) {
+  uint16_t v;
+  __asm__("mov %%cs, %0" : "=r"(v));
+  return v;
+}
+static uint16_t get_ds(void) {
+  uint16_t v;
+  __asm__("mov %%ds, %0" : "=r"(v));
+  return v;
+}
+static uint16_t get_es(void) {
+  uint16_t v;
+  __asm__("mov %%es, %0" : "=r"(v));
+  return v;
+}
+static uint16_t get_ss(void) {
+  uint16_t v;
+  __asm__("mov %%ss, %0" : "=r"(v));
+  return v;
+}
+static uint16_t get_fs(void) {
+  uint16_t v;
+  __asm__("mov %%fs, %0" : "=r"(v));
+  return v;
+}
+static uint16_t get_gs(void) {
+  uint16_t v;
+  __asm__("mov %%gs, %0" : "=r"(v));
+  return v;
+}
+static uint16_t get_ldtr(void) {
+  uint16_t v;
+  __asm__("sldt %0" : "=r"(v));
+  return v;
+}
+static uint16_t get_tr(void) {
+  uint16_t v;
+  __asm__("str %0" : "=r"(v));
+  return v;
+}
+
+/* Reading Segment Registers and System Table Registers */
+static uint64_t get_rflags(void) {
+  uint64_t rflags;
+  __asm__ volatile("pushfq\n\t"
+                   "pop %0\n\t"
+                   : "=r"(rflags)
+                   :
+                   : "cc");
+  return rflags;
+}
