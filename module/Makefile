@@ -1,5 +1,5 @@
 obj-m += hyperion.o
-hyperion-objs := driver.o vmx.o memory.o
+hyperion-objs := driver.o vmx.o memory.o ept.o
 
 all:
 	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) modules

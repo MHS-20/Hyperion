@@ -1,3 +1,4 @@
+#include "ept.h"
 #include <linux/ioctl.h>
 #ifdef __KERNEL__
 #include <linux/types.h>
@@ -36,3 +37,8 @@ extern int processor_count;
 bool is_vmx_supported(void);
 bool initialize_vmx(void);
 void terminate_vmx(void);
+
+bool allocate_vmxon_region(struct virtual_machine_state *state);
+bool allocate_vmcs_region(struct virtual_machine_state *state);
+
+uint64_t initialize_eptp(void);
