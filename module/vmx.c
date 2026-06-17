@@ -117,6 +117,22 @@ static void vmx_init_on_cpu(void *info) {
   g_guest_state[cpu].msr_bitmap = (uint64_t)g_guest_state[cpu].msr_bitmap_virt;
   g_guest_state[cpu].msr_bitmap_physical =
       virtual_to_physical(g_guest_state[cpu].msr_bitmap_virt);
+
+  if (!clear_vmcs_state(&g_guest_state[cpu])) {
+    printk(KERN_ERR "[*] Hyperion: VMCLEAR failed on CPU %d\n", cpu);
+    return;
+  }
+
+  if (!allocate_vmcs_region(&g_guest_state[cpu])) {
+    printk(KERN_ERR "[*] Hyperion: VMPTRLD failed on CPU %d\n", cpu);
+    return;
+  }
+
+  g_guest_state[cpu].eptp = initialize_eptp();
+  if (!g_guest_state[cpu].eptp) {
+    printk(KERN_ERR "[*] Hyperion: EPTP init failed on CPU %d\n", cpu);
+    return;
+  }
 }
 
 bool initialize_vmx(void) {
