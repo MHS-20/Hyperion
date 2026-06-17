@@ -102,6 +102,21 @@ static void vmx_init_on_cpu(void *info) {
    */
   g_guest_state[cpu].vmm_stack =
       (uint64_t)g_guest_state[cpu].vmm_stack_virt + VMM_STACK_SIZE - 1;
+
+  /*
+   * Allocate a 4KB page for the MSR Bitmap.
+   * All zeros means all MSR accesses cause VM-exits.
+   */
+  g_guest_state[cpu].msr_bitmap_virt = kmalloc(PAGE_SIZE, GFP_KERNEL);
+  if (!g_guest_state[cpu].msr_bitmap_virt) {
+    printk(KERN_ERR "[*] Hyperion: failed to allocate MSR Bitmap\n");
+    return;
+  }
+  memset(g_guest_state[cpu].msr_bitmap_virt, 0, PAGE_SIZE);
+
+  g_guest_state[cpu].msr_bitmap = (uint64_t)g_guest_state[cpu].msr_bitmap_virt;
+  g_guest_state[cpu].msr_bitmap_physical =
+      virtual_to_physical(g_guest_state[cpu].msr_bitmap_virt);
 }
 
 bool initialize_vmx(void) {
