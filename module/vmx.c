@@ -145,6 +145,38 @@ static void vmx_init_on_cpu(void *info) {
     printk(KERN_ERR "[*] Hyperion: EPTP init failed on CPU %d\n", cpu);
     return;
   }
+
+  printk(KERN_INFO "[*] Hyperion: Setting up VMCS for CPU %d.\n", cpu);
+  if (!setup_vmcs(&g_guest_state[cpu], g_guest_state[cpu].eptp)) {
+    printk(KERN_ERR "[*] Hyperion: VMCS setup failed on CPU %d\n", cpu);
+    return;
+  }
+
+  /* =========== LAUNCH THE VIRTUAL MACHINE =========== */
+  printk(
+      KERN_INFO
+      "\n======================== Launching VM =============================\n"
+      "CPU: %d\n",
+      cpu);
+
+  asm_save_state_for_vmexit();
+
+  {
+    uint8_t status = 0;
+    __asm__ volatile("vmlaunch\n\t"
+                     "setna %0\n\t"
+                     : "=qm"(status)
+                     :
+                     : "cc", "memory");
+
+    if (status) {
+      uint64_t error_code = 0;
+      vmread(VM_INSTRUCTION_ERROR, &error_code);
+      __asm__ volatile("vmxoff\n\t" ::: "cc");
+      printk(KERN_ERR "[*] Hyperion: VMLAUNCH error: 0x%llx (CPU %d)\n",
+             error_code, cpu);
+    }
+  }
 }
 
 bool initialize_vmx(void) {
@@ -642,5 +674,32 @@ void main_vmexit_handler(uint64_t *guest_regs) {
 
   default:
     break;
+  }
+}
+
+static void resume_to_next_instruction(void) {
+  uint64_t current_rip = 0;
+  uint64_t exit_instruction_length = 0;
+
+  vmread(GUEST_RIP, &current_rip);
+  vmread(VM_EXIT_INSTRUCTION_LEN, &exit_instruction_length);
+
+  vmwrite(GUEST_RIP, current_rip + exit_instruction_length);
+}
+
+void vm_resume_instruction(void) {
+  uint8_t status;
+  uint64_t error_code = 0;
+
+  __asm__ volatile("vmresume\n\t"
+                   "setna %0\n\t"
+                   : "=qm"(status)
+                   :
+                   : "cc", "memory");
+
+  if (status) {
+    vmread(VM_INSTRUCTION_ERROR, &error_code);
+    __asm__ volatile("vmxoff\n\t" ::: "cc");
+    printk(KERN_ERR "[*] Hyperion: VMRESUME error: 0x%llx\n", error_code);
   }
 }
