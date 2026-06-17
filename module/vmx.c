@@ -318,3 +318,63 @@ static uint64_t get_rflags(void) {
                    : "cc");
   return rflags;
 }
+
+/* Intel segment descriptor (8 bytes) */
+struct segment_descriptor {
+  uint16_t limit_low;
+  uint16_t base_low;
+  uint8_t base_mid;
+  uint8_t attrs_low;        /* accessed, type, DPL, present */
+  uint8_t limit_high_attrs; /* limit[19:16] + AVL + L + D/B + G */
+  uint8_t base_high;
+} __attribute__((packed));
+
+/* Parsed representation of a segment */
+struct segment_selector {
+  uint16_t sel;
+  uint64_t base;
+  uint32_t limit;
+  uint32_t attributes;
+};
+
+/*
+ * Read a single segment descriptor from the GDT and fill in a
+ * segment_selector structure.  Returns true on success.
+ */
+static bool get_segment_descriptor(struct segment_selector *seg,
+                                   uint16_t selector, unsigned char *gdt_base) {
+  struct segment_descriptor *desc;
+
+  if (!seg)
+    return false;
+
+  /* Bits 0-1 = RPL, bit 2 = table indicator (must be 0 for GDT) */
+  if (selector & 0x4)
+    return false;
+
+  desc = (struct segment_descriptor *)(gdt_base + (selector & ~0x7));
+
+  seg->sel = selector;
+  seg->base = desc->base_low | ((uint32_t)desc->base_mid << 16) |
+              ((uint32_t)desc->base_high << 24);
+  seg->limit =
+      desc->limit_low | ((uint32_t)(desc->limit_high_attrs & 0xf) << 16);
+  seg->attributes =
+      desc->attrs_low | ((uint32_t)(desc->limit_high_attrs & 0xf0) << 4);
+
+  /*
+   * If the system descriptor bit (bit 4 of attrs_low) is cleared,
+   * this is a 16-byte descriptor (TSS, call gate, etc.) and the
+   * upper 32 bits of the base are in the second 8 bytes.
+   */
+  if (!(desc->attrs_low & 0x10)) {
+    uint64_t *extra = (uint64_t *)((unsigned char *)desc + 8);
+    seg->base = (seg->base & 0xffffffff) | ((*extra & 0xffffffff) << 32);
+  }
+
+  /* If the Granularity bit is set, scale limit to 4KB pages */
+  if (seg->attributes & 0x8000)
+    seg->limit = (seg->limit << 12) + 0xfff;
+
+  return true;
+}
