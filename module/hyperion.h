@@ -23,11 +23,25 @@ uint64_t virtual_to_physical(void *va);
 #define IOCTL_SEND_BUFFER _IOW(HYPERION_MAGIC, 2, unsigned long)
 
 struct virtual_machine_state {
-  uint64_t vmxon_region; /* Physical address of VMXON region */
-  uint64_t vmcs_region;  /* Physical address of VMCS region  */
+  /* Physical addresses of the VMXON and VMCS regions */
+  uint64_t vmxon_region;
+  uint64_t vmcs_region;
+
+  /* Extended Page Table Pointer (full 64-bit EPTP value) */
+  uint64_t eptp;
+
+  /* Separate stack for the VMM (VM-Exit handler) */
+  uint64_t vmm_stack;
+
+  /* MSR Bitmap — virtual and physical addresses */
+  uint64_t msr_bitmap;
+  uint64_t msr_bitmap_physical;
+
 #ifdef __KERNEL__
-  void *vmxon_alloc; /* original kmalloc ptr — for kfree */
-  void *vmcs_alloc;  /* original kmalloc ptr — for kfree */
+  void *vmxon_alloc;     /* original kmalloc ptr for vmxon_region (for kfree) */
+  void *vmcs_alloc;      /* original kmalloc ptr for vmcs_region  (for kfree) */
+  void *vmm_stack_virt;  /* virtual address of VMM stack (for kfree) */
+  void *msr_bitmap_virt; /* virtual address of MSR Bitmap (for kfree) */
 #endif
 };
 
