@@ -6,8 +6,11 @@
 #include <linux/slab.h>
 #include <linux/smp.h>
 
-struct virtual_machine_state *g_guest_state = NULL;
 int processor_count = 0;
+struct virtual_machine_state *g_guest_state = NULL;
+
+uint64_t g_stack_pointer_for_returning;
+uint64_t g_base_pointer_for_returning;
 
 /* IA32_FEATURE_CONTROL MSR layout */
 union ia32_feature_control_msr {
@@ -22,6 +25,15 @@ union ia32_feature_control_msr {
     uint64_t reserved3 : 48;    /* [16-63]*/
   } fields;
 };
+
+static void asm_save_state_for_vmexit(void) {
+  __asm__ volatile("mov %%rsp, %0\n\t"
+                   "mov %%rbp, %1\n\t"
+                   : "=m"(g_stack_pointer_for_returning),
+                     "=m"(g_base_pointer_for_returning)
+                   :
+                   : "memory");
+}
 
 bool is_vmx_supported(void) {
   uint32_t ecx;
