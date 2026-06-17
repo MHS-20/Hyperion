@@ -65,9 +65,8 @@ static void vmx_init_on_cpu(void *info) {
    * VMXOFF will #UD if VMX is not active; the exception table entry
    * makes the kernel skip faulting VMXOFF silently. */
   __asm__ volatile("1: vmxoff\n\t"
-                   "2:\n\t"
-                   _ASM_EXTABLE(1b, 2b)
-                   ::: "cc");
+                   "2:\n\t" _ASM_EXTABLE(1b, 2b)::
+                       : "cc");
 
   if (!allocate_vmxon_region(&g_guest_state[cpu])) {
     printk(KERN_ERR "[*] Hyperion: VMXON region allocation failed on CPU %d\n",
@@ -133,4 +132,14 @@ void terminate_vmx(void) {
   g_guest_state = NULL;
 
   printk(KERN_INFO "[*] Hyperion: VMX terminated successfully\n");
+}
+
+uint64_t vmptrst_instruction(void) {
+  uint64_t vmcs_pa = 0;
+
+  __asm__ volatile("vmptrst %0\n\t" : "=m"(vmcs_pa) : : "cc", "memory");
+
+  printk(KERN_INFO "[*] Hyperion: VMPTRST %llx\n", vmcs_pa);
+
+  return vmcs_pa;
 }
