@@ -378,3 +378,53 @@ static bool get_segment_descriptor(struct segment_selector *seg,
 
   return true;
 }
+
+/*
+ * Fill VMCS guest-state fields for a single segment register.
+ * SegmentReg: one of ES=0, CS=1, SS=2, DS=3, FS=4, GS=5, LDTR=6, TR=7
+ * (these indices match the VMCS field encoding layout).
+ */
+enum seg_reg {
+  SEG_ES = 0,
+  SEG_CS = 1,
+  SEG_SS = 2,
+  SEG_DS = 3,
+  SEG_FS = 4,
+  SEG_GS = 5,
+  SEG_LDTR = 6,
+  SEG_TR = 7,
+};
+
+static void fill_guest_selector_data(void *gdt_base, enum seg_reg seg_reg,
+                                     uint16_t selector) {
+  struct segment_selector seg = {0};
+  uint32_t access_rights;
+
+  get_segment_descriptor(&seg, selector, (unsigned char *)gdt_base);
+
+  /*
+   * The access rights field in the VMCS is laid out as:
+   *   bits  3:0  = type
+   *   bit   4    = S (system) — descriptor type
+   *   bits  6:5  = DPL
+   *   bit   7    = P (present)
+   *   bits 11:8  = reserved (set to 0)
+   *   bit  12    = AVL
+   *   bit  13    = reserved (for code/data, this is 0; for system, L flag)
+   *   bit  14    = D/B (default operation size)
+   *   bit  15    = G (granularity)
+   *   bit  16    = unusable (if selector is NULL, this bit must be set)
+   *
+   * The lower byte of seg.attributes = attrs_low  (type, S, DPL, P)
+   * The upper bits (12..15) come from the second attribute byte.
+   */
+  access_rights = seg.attributes & 0xf0ff;
+
+  if (!selector)
+    access_rights |= 0x10000; /* mark as unusable */
+
+  vmwrite(GUEST_ES_SELECTOR + seg_reg * 2, selector);
+  vmwrite(GUEST_ES_LIMIT + seg_reg * 2, seg.limit);
+  vmwrite(GUEST_ES_AR_BYTES + seg_reg * 2, access_rights);
+  vmwrite(GUEST_ES_BASE + seg_reg * 2, seg.base);
+}
