@@ -585,3 +585,62 @@ static bool setup_vmcs(struct virtual_machine_state *guest_state,
 
   return true;
 }
+
+/*
+ * C-level VM-exit handler.
+ * Called from the assembly trampoline with RDI pointing to the
+ * saved register area on the stack.
+ */
+void main_vmexit_handler(uint64_t *guest_regs) {
+  uint64_t exit_reason = 0;
+  uint64_t exit_qualification = 0;
+
+  vmread(VM_EXIT_REASON, &exit_reason);
+  vmread(EXIT_QUALIFICATION, &exit_qualification);
+
+  exit_reason = exit_reason & 0xffff; /* low 16 bits are the basic reason */
+
+  printk(KERN_INFO "[*] Hyperion: VM_EXIT_REASON 0x%llx\n", exit_reason);
+  printk(KERN_INFO "[*] Hyperion: EXIT_QUALIFICATION 0x%llx\n",
+         exit_qualification);
+
+  switch (exit_reason) {
+
+  /*
+   * These instructions cause VM-exits unconditionally (Intel SDM 25.1.2).
+   * If we reach here without one of these instructions explicitly executed
+   * by the guest on purpose, something went wrong.  For now we ignore them.
+   */
+  case EXIT_REASON_VMCLEAR:
+  case EXIT_REASON_VMPTRLD:
+  case EXIT_REASON_VMPTRST:
+  case EXIT_REASON_VMREAD:
+  case EXIT_REASON_VMRESUME:
+  case EXIT_REASON_VMWRITE:
+  case EXIT_REASON_VMXOFF:
+  case EXIT_REASON_VMXON:
+  case EXIT_REASON_VMLAUNCH:
+    break;
+
+  case EXIT_REASON_HLT:
+    printk(KERN_INFO "[*] Hyperion: HLT detected in guest — "
+                     "stopping hypervisor\n");
+
+    /* Turn off VMX and return to the pre-VMLAUNCH context */
+    asm_vmxoff_and_restore_state();
+    break;
+
+  case EXIT_REASON_EXCEPTION_NMI:
+  case EXIT_REASON_CPUID:
+  case EXIT_REASON_INVD:
+  case EXIT_REASON_VMCALL:
+  case EXIT_REASON_CR_ACCESS:
+  case EXIT_REASON_MSR_READ:
+  case EXIT_REASON_MSR_WRITE:
+  case EXIT_REASON_EPT_VIOLATION:
+    break;
+
+  default:
+    break;
+  }
+}
