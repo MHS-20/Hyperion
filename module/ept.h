@@ -1,3 +1,9 @@
+#ifdef __KERNEL__
+#include <linux/types.h>
+#else
+#include <stdint.h>
+#endif
+
 /* See Intel SDM Table 24-8: Format of Extended-Page-Table Pointer */
 typedef union _EPTP {
   uint64_t all;
