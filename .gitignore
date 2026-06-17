@@ -1,6 +1,6 @@
 .cache
 build/
-
+AGENTS.md
 hyperion-user
 
 # Kernel build artifacts
