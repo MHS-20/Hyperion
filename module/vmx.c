@@ -84,6 +84,24 @@ static void vmx_init_on_cpu(void *info) {
          g_guest_state[cpu].vmxon_region);
   printk(KERN_INFO "[*] Hyperion: CPU %d — VMCS region  @ 0x%llx\n", cpu,
          g_guest_state[cpu].vmcs_region);
+
+  /*
+   * Allocate a dedicated stack for the VM-exit handler.
+   * VMM_STACK_SIZE bytes, zeroed, from the kernel heap.
+   */
+  g_guest_state[cpu].vmm_stack_virt = kmalloc(VMM_STACK_SIZE, GFP_KERNEL);
+  if (!g_guest_state[cpu].vmm_stack_virt) {
+    printk(KERN_ERR "[*] Hyperion: failed to allocate VMM stack\n");
+    return;
+  }
+  memset(g_guest_state[cpu].vmm_stack_virt, 0, VMM_STACK_SIZE);
+
+  /*
+   * HOST_RSP in the VMCS must point to the *top* of the stack since
+   * the stack grows downward on x86_64.
+   */
+  g_guest_state[cpu].vmm_stack =
+      (uint64_t)g_guest_state[cpu].vmm_stack_virt + VMM_STACK_SIZE - 1;
 }
 
 bool initialize_vmx(void) {
