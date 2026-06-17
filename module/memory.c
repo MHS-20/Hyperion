@@ -147,3 +147,21 @@ bool allocate_vmcs_region(struct virtual_machine_state *guest_state) {
   guest_state->vmcs_region = aligned_phys;
   return true;
 }
+
+bool clear_vmcs_state(struct virtual_machine_state *guest_state) {
+  uint8_t status;
+
+  __asm__ volatile("vmclear %1\n\t"
+                   "setna %0\n\t"
+                   : "=qm"(status)
+                   : "m"(guest_state->vmcs_region)
+                   : "cc", "memory");
+
+  if (status) {
+    printk(KERN_ERR "[*] Hyperion: VMCLEAR failed with status %d\n", status);
+    __asm__ volatile("vmxoff\n\t" ::: "cc");
+    return false;
+  }
+
+  return true;
+}
