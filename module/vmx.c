@@ -428,3 +428,160 @@ static void fill_guest_selector_data(void *gdt_base, enum seg_reg seg_reg,
   vmwrite(GUEST_ES_AR_BYTES + seg_reg * 2, access_rights);
   vmwrite(GUEST_ES_BASE + seg_reg * 2, seg.base);
 }
+
+// Sanitizing VMX Control Values
+static uint32_t adjust_controls(uint32_t ctl, uint32_t msr) {
+  uint64_t msr_value;
+
+  rdmsrl(msr, msr_value);
+
+  ctl &= (uint32_t)(msr_value >> 32);        /* high word: must be zero */
+  ctl |= (uint32_t)(msr_value & 0xFFFFFFFF); /* low word: must be one */
+
+  return ctl;
+}
+
+static bool setup_vmcs(struct virtual_machine_state *guest_state,
+                       uint64_t eptp_val) {
+  uint64_t gdt_base;
+  struct segment_selector tr_selector = {0};
+
+  /* ============= HOST SEGMENT SELECTORS ============= */
+  vmwrite(HOST_ES_SELECTOR, get_es() & 0xF8);
+  vmwrite(HOST_CS_SELECTOR, get_cs() & 0xF8);
+  vmwrite(HOST_SS_SELECTOR, get_ss() & 0xF8);
+  vmwrite(HOST_DS_SELECTOR, get_ds() & 0xF8);
+  vmwrite(HOST_FS_SELECTOR, get_fs() & 0xF8);
+  vmwrite(HOST_GS_SELECTOR, get_gs() & 0xF8);
+  vmwrite(HOST_TR_SELECTOR, get_tr() & 0xF8);
+
+  /* ============= VMCS LINK POINTER ============= */
+  vmwrite(VMCS_LINK_POINTER, ~0ULL);
+
+  /* ============= GUEST IA32_DEBUGCTL ============= */
+  {
+    uint64_t debug_ctl;
+    rdmsrl(MSR_IA32_DEBUGCTL, debug_ctl);
+    vmwrite(GUEST_IA32_DEBUGCTL, debug_ctl & 0xFFFFFFFF);
+    vmwrite(GUEST_IA32_DEBUGCTL_HIGH, debug_ctl >> 32);
+  }
+
+  /* ============= ZERO-FILL FIELDS ============= */
+  vmwrite(TSC_OFFSET, 0);
+  vmwrite(TSC_OFFSET_HIGH, 0);
+  vmwrite(PAGE_FAULT_ERROR_CODE_MASK, 0);
+  vmwrite(PAGE_FAULT_ERROR_CODE_MATCH, 0);
+  vmwrite(CR3_TARGET_COUNT, 0);
+  vmwrite(VM_EXIT_MSR_STORE_COUNT, 0);
+  vmwrite(VM_EXIT_MSR_LOAD_COUNT, 0);
+  vmwrite(VM_ENTRY_MSR_LOAD_COUNT, 0);
+  vmwrite(VM_ENTRY_INTR_INFO_FIELD, 0);
+
+  /* ============= GUEST SEGMENT DATA ============= */
+  gdt_base = get_gdt_base();
+
+  fill_guest_selector_data((void *)gdt_base, SEG_ES, get_es());
+  fill_guest_selector_data((void *)gdt_base, SEG_CS, get_cs());
+  fill_guest_selector_data((void *)gdt_base, SEG_SS, get_ss());
+  fill_guest_selector_data((void *)gdt_base, SEG_DS, get_ds());
+  fill_guest_selector_data((void *)gdt_base, SEG_FS, get_fs());
+  fill_guest_selector_data((void *)gdt_base, SEG_GS, get_gs());
+  fill_guest_selector_data((void *)gdt_base, SEG_LDTR, get_ldtr());
+  fill_guest_selector_data((void *)gdt_base, SEG_TR, get_tr());
+
+  /* ============= GUEST FS/GS BASE ============= */
+  {
+    uint64_t fs_base, gs_base;
+    rdmsrl(MSR_FS_BASE, fs_base);
+    rdmsrl(MSR_GS_BASE, gs_base);
+    vmwrite(GUEST_FS_BASE, fs_base);
+    vmwrite(GUEST_GS_BASE, gs_base);
+  }
+
+  /* ============= GUEST INTERRUPTIBILITY AND ACTIVITY ============= */
+  vmwrite(GUEST_INTERRUPTIBILITY_INFO, 0);
+  vmwrite(GUEST_ACTIVITY_STATE, 0); /* VMCS activity = active */
+
+  /* ============= VMX EXECUTION CONTROLS ============= */
+  vmwrite(CPU_BASED_VM_EXEC_CONTROL,
+          adjust_controls(CPU_BASED_HLT_EXITING |
+                              CPU_BASED_ACTIVATE_SECONDARY_CONTROLS,
+                          MSR_IA32_VMX_PROCBASED_CTLS));
+
+  vmwrite(
+      SECONDARY_VM_EXEC_CONTROL,
+      adjust_controls(CPU_BASED_CTL2_RDTSCP /* | CPU_BASED_CTL2_ENABLE_EPT */,
+                      MSR_IA32_VMX_PROCBASED_CTLS2));
+
+  /* ============= CONTROL REGISTERS AND DR7 ============= */
+  {
+    unsigned long cr0, cr3, cr4, dr7;
+    __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
+    __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
+    __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
+    __asm__ volatile("mov %%dr7, %0" : "=r"(dr7));
+
+    vmwrite(GUEST_CR0, cr0);
+    vmwrite(GUEST_CR3, cr3);
+    vmwrite(GUEST_CR4, cr4);
+    vmwrite(GUEST_DR7, dr7);
+
+    vmwrite(HOST_CR0, cr0);
+    vmwrite(HOST_CR3, cr3);
+    vmwrite(HOST_CR4, cr4);
+  }
+
+  /* ============= GDT & IDT ============= */
+  vmwrite(GUEST_GDTR_BASE, get_gdt_base());
+  vmwrite(GUEST_IDTR_BASE, get_idt_base());
+  vmwrite(GUEST_GDTR_LIMIT, get_gdt_limit());
+  vmwrite(GUEST_IDTR_LIMIT, get_idt_limit());
+
+  /* ============= RFLAGS ============= */
+  vmwrite(GUEST_RFLAGS, get_rflags());
+
+  /* ============= SYSENTER MSRs ============= */
+  {
+    uint64_t sysenter_cs, sysenter_eip, sysenter_esp;
+    rdmsrl(MSR_IA32_SYSENTER_CS, sysenter_cs);
+    rdmsrl(MSR_IA32_SYSENTER_EIP, sysenter_eip);
+    rdmsrl(MSR_IA32_SYSENTER_ESP, sysenter_esp);
+
+    vmwrite(GUEST_SYSENTER_CS, sysenter_cs);
+    vmwrite(GUEST_SYSENTER_EIP, sysenter_eip);
+    vmwrite(GUEST_SYSENTER_ESP, sysenter_esp);
+    vmwrite(HOST_IA32_SYSENTER_CS, sysenter_cs);
+    vmwrite(HOST_IA32_SYSENTER_EIP, sysenter_eip);
+    vmwrite(HOST_IA32_SYSENTER_ESP, sysenter_esp);
+  }
+
+  /* ============= HOST BASE ADDRESSES ============= */
+  {
+    uint64_t fs_base, gs_base;
+    rdmsrl(MSR_FS_BASE, fs_base);
+    rdmsrl(MSR_GS_BASE, gs_base);
+
+    /* HOST_TR_BASE requires parsing the TSS descriptor from the GDT */
+    get_segment_descriptor(&tr_selector, get_tr(),
+                           (unsigned char *)get_gdt_base());
+    vmwrite(HOST_TR_BASE, tr_selector.base);
+
+    vmwrite(HOST_FS_BASE, fs_base);
+    vmwrite(HOST_GS_BASE, gs_base);
+    vmwrite(HOST_GDTR_BASE, get_gdt_base());
+    vmwrite(HOST_IDTR_BASE, get_idt_base());
+  }
+
+  /* ============= GUEST/HOST RSP AND RIP ============= */
+  vmwrite(GUEST_RSP, guest_state->vmcs_region); /* placeholder */
+  vmwrite(GUEST_RIP, guest_state->vmcs_region); /* placeholder */
+
+  vmwrite(HOST_RSP, guest_state->vmm_stack);
+  vmwrite(HOST_RIP, (uint64_t)asm_vmexit_handler);
+
+  /* ============= MSR BITMAP ============= */
+  vmwrite(MSR_BITMAP, guest_state->msr_bitmap_physical);
+  vmwrite(MSR_BITMAP_HIGH, guest_state->msr_bitmap_physical >> 32);
+
+  return true;
+}
