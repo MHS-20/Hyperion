@@ -6,4 +6,4 @@ sudo insmod hyperion.ko
 cd ..
 cd user
 make
-sudo ./user/hyperion-user
+sudo ./hyperion-user

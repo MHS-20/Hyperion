@@ -54,8 +54,13 @@ void terminate_vmx(void);
 
 bool allocate_vmxon_region(struct virtual_machine_state *state);
 bool allocate_vmcs_region(struct virtual_machine_state *state);
+bool clear_vmcs_state(struct virtual_machine_state *guest_state);
 
 uint64_t initialize_eptp(void);
+
+uint64_t vmptrst_instruction(void);
+void main_vmexit_handler(uint64_t *guest_regs);
+void vm_resume_instruction(void);
 
 enum vmcs_fields {
   GUEST_ES_SELECTOR = 0x00000800,

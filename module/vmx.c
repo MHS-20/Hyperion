@@ -1,4 +1,5 @@
 #include "hyperion.h"
+#include "vmx.h"
 #include <asm/msr-index.h>
 #include <asm/msr.h>
 #include <linux/cpumask.h>
@@ -6,11 +7,23 @@
 #include <linux/slab.h>
 #include <linux/smp.h>
 
+#define VMM_STACK_SIZE (PAGE_SIZE * 2)
+
 int processor_count = 0;
 struct virtual_machine_state *g_guest_state = NULL;
 
 uint64_t g_stack_pointer_for_returning;
 uint64_t g_base_pointer_for_returning;
+
+/* Assembly symbols from exit_handler.s */
+extern void asm_vmexit_handler(void);
+extern void asm_vmxoff_and_restore_state(void);
+
+/* Forward declarations for static functions used before their definitions */
+static void vmwrite(uint64_t field, uint64_t value);
+static void vmread(uint64_t field, uint64_t *value);
+static bool setup_vmcs(struct virtual_machine_state *guest_state,
+                       uint64_t eptp_val);
 
 /* IA32_FEATURE_CONTROL MSR layout */
 union ia32_feature_control_msr {
@@ -212,13 +225,18 @@ void terminate_vmx(void) {
 
   on_each_cpu(vmx_exit_on_cpu, NULL, 1);
 
-  /* Free all per-CPU regions */
   for (i = 0; i < processor_count; i++) {
     if (g_guest_state[i].vmxon_alloc)
       kfree(g_guest_state[i].vmxon_alloc);
 
     if (g_guest_state[i].vmcs_alloc)
       kfree(g_guest_state[i].vmcs_alloc);
+
+    if (g_guest_state[i].vmm_stack_virt)
+      kfree(g_guest_state[i].vmm_stack_virt);
+
+    if (g_guest_state[i].msr_bitmap_virt)
+      kfree(g_guest_state[i].msr_bitmap_virt);
   }
 
   kfree(g_guest_state);
@@ -493,7 +511,7 @@ static bool setup_vmcs(struct virtual_machine_state *guest_state,
   /* ============= GUEST IA32_DEBUGCTL ============= */
   {
     uint64_t debug_ctl;
-    rdmsrl(MSR_IA32_DEBUGCTL, debug_ctl);
+    rdmsrl(0x1D9 /* MSR_IA32_DEBUGCTL */, debug_ctl);
     vmwrite(GUEST_IA32_DEBUGCTL, debug_ctl & 0xFFFFFFFF);
     vmwrite(GUEST_IA32_DEBUGCTL_HIGH, debug_ctl >> 32);
   }
@@ -677,7 +695,7 @@ void main_vmexit_handler(uint64_t *guest_regs) {
   }
 }
 
-static void resume_to_next_instruction(void) {
+static __maybe_unused void resume_to_next_instruction(void) {
   uint64_t current_rip = 0;
   uint64_t exit_instruction_length = 0;
 
