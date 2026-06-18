@@ -83,7 +83,7 @@ bool clear_vmcs_state(struct virtual_machine_state *guest_state);
 uint64_t initialize_eptp(void);
 
 uint64_t vmptrst_instruction(void);
-void main_vmexit_handler(uint64_t *guest_regs);
+uint8_t main_vmexit_handler(uint64_t *guest_regs);
 void vm_resume_instruction(void);
 
 enum vmcs_fields {

@@ -19,6 +19,10 @@ uint64_t g_base_pointer_for_returning;
 extern void asm_vmexit_handler(void);
 extern void asm_vmxoff_and_restore_state(void);
 
+/* Saved guest RIP and RSP for VMXOFF restoration path */
+static uint64_t g_GuestRIP = 0;
+static uint64_t g_GuestRSP = 0;
+
 /* Forward declarations for static functions used before their definitions */
 static void vmwrite(uint64_t field, uint64_t value);
 static void vmread(uint64_t field, uint64_t *value);
@@ -619,31 +623,61 @@ static bool setup_vmcs(struct virtual_machine_state *guest_state,
   return true;
 }
 
+static bool HandleCPUID(PGUEST_REGS state) {
+  int CpuInfo[4] = {0};
+  uint64_t Mode = 0;
+
+  vmread(GUEST_CS_SELECTOR, &Mode);
+  Mode = Mode & 0x3;
+
+  if ((state->rax == 0x41414141) && (state->rcx == 0x42424242) && Mode == 0)
+    return true;
+
+  __asm__ volatile("mov %[leaf], %%eax\n\t"
+                   "mov %[subleaf], %%ecx\n\t"
+                   "cpuid\n\t"
+                   : "=a"(CpuInfo[0]), "=b"(CpuInfo[1]),
+                     "=c"(CpuInfo[2]), "=d"(CpuInfo[3])
+                   : [leaf] "r"((int)state->rax),
+                     [subleaf] "r"((int)state->rcx)
+                   : "memory");
+
+  if (state->rax == 1)
+    CpuInfo[2] |= (1 << 31);
+  else if (state->rax == 0x40000000) {
+    CpuInfo[1] = 0x6e6f6972;
+    CpuInfo[2] = 0x76486e6f;
+    CpuInfo[3] = 0x00000000;
+    CpuInfo[0] = 0x72657079;
+  }
+
+  state->rax = CpuInfo[0];
+  state->rbx = CpuInfo[1];
+  state->rcx = CpuInfo[2];
+  state->rdx = CpuInfo[3];
+
+  return false;
+}
+
 /*
  * C-level VM-exit handler.
  * Called from the assembly trampoline with RDI pointing to the
  * saved register area on the stack.
  */
-void main_vmexit_handler(uint64_t *guest_regs) {
+uint8_t main_vmexit_handler(uint64_t *guest_regs) {
   uint64_t exit_reason = 0;
-  uint64_t exit_qualification = 0;
+  PGUEST_REGS GuestRegs = (PGUEST_REGS)guest_regs;
+  uint8_t should_terminate = 0;
 
   vmread(VM_EXIT_REASON, &exit_reason);
-  vmread(EXIT_QUALIFICATION, &exit_qualification);
 
-  exit_reason = exit_reason & 0xffff; /* low 16 bits are the basic reason */
+  exit_reason = exit_reason & 0xffff;
 
-  printk(KERN_INFO "[*] Hyperion: VM_EXIT_REASON 0x%llx\n", exit_reason);
-  printk(KERN_INFO "[*] Hyperion: EXIT_QUALIFICATION 0x%llx\n",
-         exit_qualification);
+  printk(KERN_INFO "[*] Hyperion: VM_EXIT_REASON 0x%llx on CPU %d\n",
+         exit_reason, smp_processor_id());
 
   switch (exit_reason) {
 
-  /*
-   * These instructions cause VM-exits unconditionally (Intel SDM 25.1.2).
-   * If we reach here without one of these instructions explicitly executed
-   * by the guest on purpose, something went wrong.  For now we ignore them.
-   */
   case EXIT_REASON_VMCLEAR:
   case EXIT_REASON_VMPTRLD:
   case EXIT_REASON_VMPTRST:
@@ -652,30 +686,44 @@ void main_vmexit_handler(uint64_t *guest_regs) {
   case EXIT_REASON_VMWRITE:
   case EXIT_REASON_VMXOFF:
   case EXIT_REASON_VMXON:
-  case EXIT_REASON_VMLAUNCH:
+  case EXIT_REASON_VMLAUNCH: {
+    uint64_t RFLAGS = 0;
+    vmread(GUEST_RFLAGS, &RFLAGS);
+    vmwrite(GUEST_RFLAGS, RFLAGS | 0x1);
     break;
+  }
 
   case EXIT_REASON_HLT:
     printk(KERN_INFO "[*] Hyperion: HLT detected in guest — "
                      "stopping hypervisor\n");
-
-    /* Turn off VMX and return to the pre-VMLAUNCH context */
     asm_vmxoff_and_restore_state();
     break;
 
-  case EXIT_REASON_EXCEPTION_NMI:
-  case EXIT_REASON_CPUID:
-  case EXIT_REASON_INVD:
-  case EXIT_REASON_VMCALL:
+  case EXIT_REASON_CPUID: {
+    bool term = HandleCPUID(GuestRegs);
+    if (term) {
+      uint64_t ExitInstructionLength = 0;
+      vmread(GUEST_RIP, &g_GuestRIP);
+      vmread(GUEST_RSP, &g_GuestRSP);
+      vmread(VM_EXIT_INSTRUCTION_LEN, &ExitInstructionLength);
+      g_GuestRIP += ExitInstructionLength;
+      should_terminate = 1;
+    }
+    break;
+  }
+
   case EXIT_REASON_CR_ACCESS:
+    break;
+
   case EXIT_REASON_MSR_READ:
   case EXIT_REASON_MSR_WRITE:
-  case EXIT_REASON_EPT_VIOLATION:
     break;
 
   default:
     break;
   }
+
+  return should_terminate;
 }
 
 static __maybe_unused void resume_to_next_instruction(void) {
