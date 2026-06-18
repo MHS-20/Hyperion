@@ -22,6 +22,8 @@ extern void asm_vmxoff_and_restore_state(void);
 uint64_t g_GuestRIP = 0;
 uint64_t g_GuestRSP = 0;
 
+static uint64_t g_Cr3TargetCount = 0;
+
 /* Forward declarations for static functions used before their definitions */
 static void vmwrite(uint64_t field, uint64_t value);
 static void vmread(uint64_t field, uint64_t *value);
@@ -629,6 +631,29 @@ static bool setup_vmcs(struct virtual_machine_state *guest_state,
   vmwrite(MSR_BITMAP, guest_state->msr_bitmap_physical);
   vmwrite(MSR_BITMAP_HIGH, guest_state->msr_bitmap_physical >> 32);
 
+  return true;
+}
+
+static bool SetTargetControls(uint64_t CR3, uint64_t Index) {
+  if (Index >= 4)
+    return false;
+
+  if (CR3 == 0) {
+    if (g_Cr3TargetCount <= 0)
+      return false;
+    g_Cr3TargetCount -= 1;
+    if (Index == 0) vmwrite(CR3_TARGET_VALUE0, 0);
+    if (Index == 1) vmwrite(CR3_TARGET_VALUE1, 0);
+    if (Index == 2) vmwrite(CR3_TARGET_VALUE2, 0);
+    if (Index == 3) vmwrite(CR3_TARGET_VALUE3, 0);
+  } else {
+    if (Index == 0) vmwrite(CR3_TARGET_VALUE0, CR3);
+    if (Index == 1) vmwrite(CR3_TARGET_VALUE1, CR3);
+    if (Index == 2) vmwrite(CR3_TARGET_VALUE2, CR3);
+    if (Index == 3) vmwrite(CR3_TARGET_VALUE3, CR3);
+    g_Cr3TargetCount += 1;
+  }
+  vmwrite(CR3_TARGET_COUNT, g_Cr3TargetCount);
   return true;
 }
 
