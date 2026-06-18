@@ -61,3 +61,8 @@
 #define EXIT_REASON_XSAVES 63
 #define EXIT_REASON_XRSTORS 64
 #define EXIT_REASON_PCOMMIT 65
+
+#define TYPE_MOV_TO_CR   0
+#define TYPE_MOV_FROM_CR 1
+#define TYPE_CLTS        2
+#define TYPE_LMSW        3

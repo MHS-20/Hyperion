@@ -685,6 +685,57 @@ static void HandleMSRWrite(PGUEST_REGS GuestRegs) {
   }
 }
 
+static void HandleControlRegisterAccess(PGUEST_REGS GuestState) {
+  uint64_t ExitQualification = 0;
+  uint64_t ControlRegister, AccessType, RegisterIndex;
+  uint64_t *RegPtr = NULL;
+
+  vmread(EXIT_QUALIFICATION, &ExitQualification);
+  ControlRegister = ExitQualification & 0xF;
+  AccessType = (ExitQualification >> 4) & 0x3;
+  RegisterIndex = (ExitQualification >> 8) & 0xF;
+
+  {
+    static const uint8_t reg_to_offset[16] = {
+        0, 1, 2, 3, 4, 5, 6, 7,
+        8, 9, 10, 11, 12, 13, 14, 15
+    };
+    uint64_t *regs = (uint64_t *)GuestState;
+    RegPtr = &regs[reg_to_offset[RegisterIndex & 0xF]];
+  }
+
+  if (RegisterIndex == 4) {
+    uint64_t RSP = 0;
+    vmread(GUEST_RSP, &RSP);
+    *RegPtr = RSP;
+  }
+
+  switch (AccessType) {
+  case TYPE_MOV_TO_CR:
+    switch (ControlRegister) {
+    case 0:
+      vmwrite(GUEST_CR0, *RegPtr);
+      vmwrite(CR0_READ_SHADOW, *RegPtr);
+      break;
+    case 3:
+      vmwrite(GUEST_CR3, (*RegPtr & ~(1ULL << 63)));
+      break;
+    case 4:
+      vmwrite(GUEST_CR4, *RegPtr);
+      vmwrite(CR4_READ_SHADOW, *RegPtr);
+      break;
+    }
+    break;
+  case TYPE_MOV_FROM_CR:
+    switch (ControlRegister) {
+    case 0: vmread(GUEST_CR0, RegPtr); break;
+    case 3: vmread(GUEST_CR3, RegPtr); break;
+    case 4: vmread(GUEST_CR4, RegPtr); break;
+    }
+    break;
+  }
+}
+
 static bool HandleCPUID(PGUEST_REGS state) {
   int CpuInfo[4] = {0};
   uint64_t Mode = 0;
@@ -775,6 +826,7 @@ uint8_t main_vmexit_handler(uint64_t *guest_regs) {
   }
 
   case EXIT_REASON_CR_ACCESS:
+    HandleControlRegisterAccess(GuestRegs);
     break;
 
   case EXIT_REASON_MSR_READ: {
