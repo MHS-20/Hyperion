@@ -19,9 +19,8 @@ uint64_t g_base_pointer_for_returning;
 extern void asm_vmexit_handler(void);
 extern void asm_vmxoff_and_restore_state(void);
 
-/* Saved guest RIP and RSP for VMXOFF restoration path */
-static uint64_t g_GuestRIP = 0;
-static uint64_t g_GuestRSP = 0;
+uint64_t g_GuestRIP = 0;
+uint64_t g_GuestRSP = 0;
 
 /* Forward declarations for static functions used before their definitions */
 static void vmwrite(uint64_t field, uint64_t value);

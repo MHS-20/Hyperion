@@ -100,6 +100,8 @@ asm_vmxoff_and_restore_state:
 
 .extern main_vmexit_handler
 .extern vm_resume_instruction
+.extern g_GuestRIP
+.extern g_GuestRSP
 
 .globl asm_vmexit_handler
 asm_vmexit_handler:
@@ -128,6 +130,9 @@ asm_vmexit_handler:
 
     add     $0x28, %rsp
 
+    cmp     $1, %al
+    je      VmxoffHandler
+
     pop     %rax
     pop     %rcx
     pop     %rdx
@@ -148,3 +153,26 @@ asm_vmexit_handler:
     sub     $0x0100, %rsp  /* safety margin for future functions */
 
     jmp     vm_resume_instruction
+
+VmxoffHandler:
+    vmxoff
+
+    pop     %rax
+    pop     %rcx
+    pop     %rdx
+    pop     %rbx
+    pop     %rbp           /* discard extra RBP */
+    pop     %rbp
+    pop     %rsi
+    pop     %rdi
+    pop     %r8
+    pop     %r9
+    pop     %r10
+    pop     %r11
+    pop     %r12
+    pop     %r13
+    pop     %r14
+    pop     %r15
+
+    mov     g_GuestRSP(%rip), %rsp
+    jmp     *g_GuestRIP(%rip)
