@@ -623,6 +623,68 @@ static bool setup_vmcs(struct virtual_machine_state *guest_state,
   return true;
 }
 
+static void SetBit(void *Addr, uint64_t Bit, bool Set) {
+  uint64_t Byte = Bit / 8;
+  uint64_t N = 7 - (Bit % 8);
+  uint8_t *Addr2 = (uint8_t *)Addr;
+  if (Set)
+    Addr2[Byte] |= (1 << N);
+  else
+    Addr2[Byte] &= ~(1 << N);
+}
+
+static uint8_t GetBit(void *Addr, uint64_t Bit) {
+  uint64_t Byte = Bit / 8;
+  uint64_t K = 7 - (Bit % 8);
+  uint8_t *Addr2 = (uint8_t *)Addr;
+  return Addr2[Byte] & (1 << K);
+}
+
+static bool SetMsrBitmap(uint64_t Msr, int ProcessID,
+                         bool ReadDetection, bool WriteDetection) {
+  if (!ReadDetection && !WriteDetection)
+    return false;
+
+  if (Msr <= 0x00001FFF) {
+    if (ReadDetection)
+      SetBit(g_guest_state[ProcessID].msr_bitmap_virt, Msr, true);
+    if (WriteDetection)
+      SetBit((uint8_t *)g_guest_state[ProcessID].msr_bitmap_virt + 2048,
+             Msr, true);
+  } else if (Msr >= 0xC0000000 && Msr <= 0xC0001FFF) {
+    uint64_t HighOffset = Msr - 0xC0000000;
+    if (ReadDetection)
+      SetBit((uint8_t *)g_guest_state[ProcessID].msr_bitmap_virt + 1024,
+             HighOffset, true);
+    if (WriteDetection)
+      SetBit((uint8_t *)g_guest_state[ProcessID].msr_bitmap_virt + 3072,
+             HighOffset, true);
+  } else {
+    return false;
+  }
+  return true;
+}
+
+static void HandleMSRRead(PGUEST_REGS GuestRegs) {
+  uint64_t MsrValue = 0;
+  if ((GuestRegs->rcx <= 0x00001FFF) ||
+      (GuestRegs->rcx >= 0xC0000000 && GuestRegs->rcx <= 0xC0001FFF))
+    rdmsrl((uint32_t)(GuestRegs->rcx & 0xFFFFFFFF), MsrValue);
+  else
+    MsrValue = 0;
+  GuestRegs->rax = MsrValue & 0xFFFFFFFF;
+  GuestRegs->rdx = (MsrValue >> 32) & 0xFFFFFFFF;
+}
+
+static void HandleMSRWrite(PGUEST_REGS GuestRegs) {
+  if ((GuestRegs->rcx <= 0x00001FFF) ||
+      (GuestRegs->rcx >= 0xC0000000 && GuestRegs->rcx <= 0xC0001FFF)) {
+    uint64_t MsrValue = (GuestRegs->rax & 0xFFFFFFFF) |
+                        ((GuestRegs->rdx & 0xFFFFFFFF) << 32);
+    wrmsrl((uint32_t)(GuestRegs->rcx & 0xFFFFFFFF), MsrValue);
+  }
+}
+
 static bool HandleCPUID(PGUEST_REGS state) {
   int CpuInfo[4] = {0};
   uint64_t Mode = 0;
@@ -715,9 +777,19 @@ uint8_t main_vmexit_handler(uint64_t *guest_regs) {
   case EXIT_REASON_CR_ACCESS:
     break;
 
-  case EXIT_REASON_MSR_READ:
-  case EXIT_REASON_MSR_WRITE:
+  case EXIT_REASON_MSR_READ: {
+    uint32_t ECX = GuestRegs->rcx & 0xFFFFFFFF;
+    printk(KERN_INFO "[*] Hyperion: RDMSR (bitmap) : 0x%x\n", ECX);
+    HandleMSRRead(GuestRegs);
     break;
+  }
+
+  case EXIT_REASON_MSR_WRITE: {
+    uint32_t ECX = GuestRegs->rcx & 0xFFFFFFFF;
+    printk(KERN_INFO "[*] Hyperion: WRMSR (bitmap) : 0x%x\n", ECX);
+    HandleMSRWrite(GuestRegs);
+    break;
+  }
 
   default:
     break;
