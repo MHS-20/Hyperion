@@ -173,9 +173,19 @@ bool initialize_vmx(void) {
   return true;
 }
 
-static void vmx_exit_on_cpu(void *info) {
+static void vmx_off_on_cpu(void *info) {
   int cpu = smp_processor_id();
-  __asm__ volatile("vmxoff\n\t" ::: "cc");
+  int CpuInfo[4] = {0};
+
+  __asm__ volatile("mov %[eax_val], %%eax\n\t"
+                   "mov %[ecx_val], %%ecx\n\t"
+                   "cpuid\n\t"
+                   : "=a"(CpuInfo[0]), "=b"(CpuInfo[1]),
+                     "=c"(CpuInfo[2]), "=d"(CpuInfo[3])
+                   : [eax_val] "r"(0x41414141),
+                     [ecx_val] "r"(0x42424242)
+                   : "memory");
+
   printk(KERN_INFO "[*] Hyperion: VMX turned off on CPU %d\n", cpu);
 }
 
@@ -184,7 +194,7 @@ void terminate_vmx(void) {
 
   printk(KERN_INFO "[*] Hyperion: terminating VMX on all CPUs\n");
 
-  on_each_cpu(vmx_exit_on_cpu, NULL, 1);
+  on_each_cpu(vmx_off_on_cpu, NULL, 1);
 
   for (i = 0; i < processor_count; i++) {
     if (g_guest_state[i].vmxon_alloc)

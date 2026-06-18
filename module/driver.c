@@ -54,6 +54,7 @@ static int dev_open(struct inode *inodep, struct file *filep) {
 
 /* Called when userspace closes /dev/my_hypervisor */
 static int dev_release(struct inode *inodep, struct file *filep) {
+  terminate_vmx();
   printk(KERN_INFO "Hyperion: device closed\n");
   return 0;
 }
