@@ -7,6 +7,7 @@ void enable_vmx_operation(void);
 void *physical_to_virtual(uint64_t pa);
 uint64_t virtual_to_physical(void *va);
 #else
+#include <stdbool.h>
 #include <stdint.h>
 #endif
 
@@ -174,7 +175,9 @@ enum vmcs_fields {
   GUEST_ACTIVITY_STATE = 0x00004826,
   GUEST_SMBASE = 0x00004828,
   GUEST_SYSENTER_CS = 0x0000482A,
+  GUEST_IA32_EFER = 0x00002806,
   HOST_IA32_SYSENTER_CS = 0x00004c00,
+  HOST_IA32_EFER = 0x00002c02,
   CR0_GUEST_HOST_MASK = 0x00006000,
   CR4_GUEST_HOST_MASK = 0x00006002,
   CR0_READ_SHADOW = 0x00006004,

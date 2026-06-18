@@ -1,3 +1,6 @@
+#include <linux/linkage.h>
+#include <asm/nospec-branch.h>
+
 # ---------------------------------------------------------------------------
 # VmxSaveState
 # Saves all general-purpose registers, passes the current RSP as the guest
@@ -48,7 +51,7 @@ VmxSaveState:
     pop     %rcx
     pop     %rax
 
-    ret
+    RET
 
 
 # ---------------------------------------------------------------------------
@@ -76,7 +79,7 @@ VmxRestoreState:
     pop     %rcx
     pop     %rax
 
-    ret
+    RET
 
 .globl asm_vmxoff_and_restore_state
 .globl g_stack_pointer_for_returning
@@ -96,7 +99,7 @@ asm_vmxoff_and_restore_state:
      * [RSP], so a normal RET will jump back to the caller.
      */
     addq    $8, %rsp       /* skip the saved frame */
-    ret
+    RET
 
 .extern main_vmexit_handler
 .extern vm_resume_instruction
@@ -175,4 +178,5 @@ VmxoffHandler:
     pop     %r15
 
     mov     g_GuestRSP(%rip), %rsp
+    ANNOTATE_RETPOLINE_SAFE
     jmp     *g_GuestRIP(%rip)

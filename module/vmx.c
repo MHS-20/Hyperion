@@ -603,6 +603,14 @@ static bool setup_vmcs(struct virtual_machine_state *guest_state,
     vmwrite(HOST_IA32_SYSENTER_ESP, sysenter_esp);
   }
 
+  /* ============= IA32_EFER ============= */
+  {
+    uint64_t efer;
+    rdmsrl(MSR_EFER, efer);
+    vmwrite(GUEST_IA32_EFER, efer);
+    vmwrite(HOST_IA32_EFER, efer);
+  }
+
   /* ============= HOST BASE ADDRESSES ============= */
   {
     uint64_t fs_base, gs_base;
@@ -908,6 +916,7 @@ void vm_resume_instruction(void) {
     vmread(VM_INSTRUCTION_ERROR, &error_code);
     __asm__ volatile("vmxoff\n\t" ::: "cc");
     printk(KERN_ERR "[*] Hyperion: VMRESUME error: 0x%llx\n", error_code);
+    __asm__ volatile("1: hlt; jmp 1b" ::: "memory");
   }
 }
 
@@ -966,6 +975,9 @@ void VirtualizeCurrentSystem(int ProcessorID, uint64_t EPTP, void *GuestStack) {
       __asm__ volatile("vmxoff\n\t" ::: "cc");
       printk(KERN_ERR "[*] Hyperion: VMLAUNCH error: 0x%llx (CPU%d)\n",
              error_code, ProcessorID);
+    } else {
+      printk(KERN_INFO "[*] Hyperion: VMLAUNCH succeeded on CPU%d\n",
+             ProcessorID);
     }
   }
 }

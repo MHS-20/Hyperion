@@ -18,5 +18,8 @@ Module.symvers
 *.cmd
 .*.cmd
 
+# VM test artifacts
+vm/
+
 # Bear / clangd
 compile_commands.json
