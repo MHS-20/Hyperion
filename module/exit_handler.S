@@ -1,3 +1,83 @@
+# ---------------------------------------------------------------------------
+# VmxSaveState
+# Saves all general-purpose registers, passes the current RSP as the guest
+# stack argument, and calls VirtualizeCurrentSystem (our C setup function).
+#
+# Calling convention (System V AMD64 ABI):
+#   %rdi = ProcessorID, %rsi = EPTP, %rdx = GuestStack
+# ---------------------------------------------------------------------------
+.globl VmxSaveState
+VmxSaveState:
+    push    %rax
+    push    %rcx
+    push    %rdx
+    push    %rbx
+    push    %rbp
+    push    %rsi
+    push    %rdi
+    push    %r8
+    push    %r9
+    push    %r10
+    push    %r11
+    push    %r12
+    push    %r13
+    push    %r14
+    push    %r15
+
+    sub     $0x20, %rsp
+
+    mov     %rsp, %rdx
+
+    call    VirtualizeCurrentSystem
+
+    add     $0x20, %rsp
+
+    pop     %r15
+    pop     %r14
+    pop     %r13
+    pop     %r12
+    pop     %r11
+    pop     %r10
+    pop     %r9
+    pop     %r8
+    pop     %rdi
+    pop     %rsi
+    pop     %rbp
+    pop     %rbx
+    pop     %rdx
+    pop     %rcx
+    pop     %rax
+
+    ret
+
+
+# ---------------------------------------------------------------------------
+# VmxRestoreState
+# Set as GUEST_RIP.  Restores all registers saved by VmxSaveState
+# and returns to the original kernel execution path.
+# ---------------------------------------------------------------------------
+.globl VmxRestoreState
+VmxRestoreState:
+    add     $0x20, %rsp
+
+    pop     %r15
+    pop     %r14
+    pop     %r13
+    pop     %r12
+    pop     %r11
+    pop     %r10
+    pop     %r9
+    pop     %r8
+    pop     %rdi
+    pop     %rsi
+    pop     %rbp
+    pop     %rbx
+    pop     %rdx
+    pop     %rcx
+    pop     %rax
+
+    ret
+
 .globl asm_vmxoff_and_restore_state
 .globl g_stack_pointer_for_returning
 .globl g_base_pointer_for_returning

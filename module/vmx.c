@@ -1,5 +1,5 @@
-#include "hyperion.h"
 #include "vmx.h"
+#include "hyperion.h"
 #include <asm/msr-index.h>
 #include <asm/msr.h>
 #include <linux/cpumask.h>
@@ -24,6 +24,9 @@ static void vmwrite(uint64_t field, uint64_t value);
 static void vmread(uint64_t field, uint64_t *value);
 static bool setup_vmcs(struct virtual_machine_state *guest_state,
                        uint64_t eptp_val);
+static void
+SetupVmcsAndVirtualizeMachine(struct virtual_machine_state *guest_state,
+                              uint64_t EPTP, void *GuestStack);
 
 /* IA32_FEATURE_CONTROL MSR layout */
 union ia32_feature_control_msr {
@@ -38,15 +41,6 @@ union ia32_feature_control_msr {
     uint64_t reserved3 : 48;    /* [16-63]*/
   } fields;
 };
-
-static void asm_save_state_for_vmexit(void) {
-  __asm__ volatile("mov %%rsp, %0\n\t"
-                   "mov %%rbp, %1\n\t"
-                   : "=m"(g_stack_pointer_for_returning),
-                     "=m"(g_base_pointer_for_returning)
-                   :
-                   : "memory");
-}
 
 bool is_vmx_supported(void) {
   uint32_t ecx;
@@ -143,53 +137,18 @@ static void vmx_init_on_cpu(void *info) {
   g_guest_state[cpu].msr_bitmap_physical =
       virtual_to_physical(g_guest_state[cpu].msr_bitmap_virt);
 
-  if (!clear_vmcs_state(&g_guest_state[cpu])) {
-    printk(KERN_ERR "[*] Hyperion: VMCLEAR failed on CPU %d\n", cpu);
-    return;
-  }
-
-  if (!allocate_vmcs_region(&g_guest_state[cpu])) {
-    printk(KERN_ERR "[*] Hyperion: VMPTRLD failed on CPU %d\n", cpu);
-    return;
-  }
-
   g_guest_state[cpu].eptp = initialize_eptp();
   if (!g_guest_state[cpu].eptp) {
     printk(KERN_ERR "[*] Hyperion: EPTP init failed on CPU %d\n", cpu);
     return;
   }
 
-  printk(KERN_INFO "[*] Hyperion: Setting up VMCS for CPU %d.\n", cpu);
-  if (!setup_vmcs(&g_guest_state[cpu], g_guest_state[cpu].eptp)) {
-    printk(KERN_ERR "[*] Hyperion: VMCS setup failed on CPU %d\n", cpu);
-    return;
-  }
-
-  /* =========== LAUNCH THE VIRTUAL MACHINE =========== */
-  printk(
-      KERN_INFO
-      "\n======================== Launching VM =============================\n"
-      "CPU: %d\n",
-      cpu);
-
-  asm_save_state_for_vmexit();
-
-  {
-    uint8_t status = 0;
-    __asm__ volatile("vmlaunch\n\t"
-                     "setna %0\n\t"
-                     : "=qm"(status)
-                     :
-                     : "cc", "memory");
-
-    if (status) {
-      uint64_t error_code = 0;
-      vmread(VM_INSTRUCTION_ERROR, &error_code);
-      __asm__ volatile("vmxoff\n\t" ::: "cc");
-      printk(KERN_ERR "[*] Hyperion: VMLAUNCH error: 0x%llx (CPU %d)\n",
-             error_code, cpu);
-    }
-  }
+  __asm__ volatile("call VmxSaveState\n\t"
+                   :
+                   : "D"(cpu), "S"(g_guest_state[cpu].eptp)
+                   : "rax", "rcx", "rdx", "rbx",
+                     "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15",
+                     "cc", "memory");
 }
 
 bool initialize_vmx(void) {
@@ -208,7 +167,6 @@ bool initialize_vmx(void) {
 
   /* Run vmx_init_on_cpu() on every online logical processor */
   on_each_cpu(vmx_init_on_cpu, NULL, 1);
-
   return true;
 }
 
@@ -553,15 +511,40 @@ static bool setup_vmcs(struct virtual_machine_state *guest_state,
   vmwrite(GUEST_ACTIVITY_STATE, 0); /* VMCS activity = active */
 
   /* ============= VMX EXECUTION CONTROLS ============= */
+  /*
+   * Primary Processor-Based VM-Execution Controls:
+   *   CPU_BASED_ACTIVATE_MSR_BITMAP   — enable MSR-bitmap filtering
+   *   CPU_BASED_ACTIVATE_SECONDARY_CONTROLS — enable secondary controls
+   */
   vmwrite(CPU_BASED_VM_EXEC_CONTROL,
-          adjust_controls(CPU_BASED_HLT_EXITING |
+          adjust_controls(CPU_BASED_ACTIVATE_MSR_BITMAP |
                               CPU_BASED_ACTIVATE_SECONDARY_CONTROLS,
                           MSR_IA32_VMX_PROCBASED_CTLS));
 
-  vmwrite(
-      SECONDARY_VM_EXEC_CONTROL,
-      adjust_controls(CPU_BASED_CTL2_RDTSCP /* | CPU_BASED_CTL2_ENABLE_EPT */,
-                      MSR_IA32_VMX_PROCBASED_CTLS2));
+  /*
+   * Secondary Processor-Based VM-Execution Controls:
+   *   CPU_BASED_CTL2_RDTSCP                  — enable RDTSCP instruction in the
+   * guest CPU_BASED_CTL2_ENABLE_INVPCID          — enable INVPCID instruction
+   * in the guest CPU_BASED_CTL2_ENABLE_XSAVE_XRSTORS    — enable XSAVE/XRSTORS
+   * in the guest
+   */
+  vmwrite(SECONDARY_VM_EXEC_CONTROL,
+          adjust_controls(CPU_BASED_CTL2_RDTSCP |
+                              CPU_BASED_CTL2_ENABLE_INVPCID |
+                              CPU_BASED_CTL2_ENABLE_XSAVE_XRSTORS,
+                          MSR_IA32_VMX_PROCBASED_CTLS2));
+
+  // Pin-based controls
+  vmwrite(PIN_BASED_VM_EXEC_CONTROL,
+          adjust_controls(0, MSR_IA32_VMX_PINBASED_CTLS));
+
+  // VM-exit controls: 64-bit (IA-32e) mode
+  vmwrite(VM_EXIT_CONTROLS,
+          adjust_controls(VM_EXIT_IA32E_MODE, MSR_IA32_VMX_EXIT_CTLS));
+
+  // VM-entry controls: 64-bit (IA-32e) mode
+  vmwrite(VM_ENTRY_CONTROLS,
+          adjust_controls(VM_ENTRY_IA32E_MODE, MSR_IA32_VMX_ENTRY_CTLS));
 
   /* ============= CONTROL REGISTERS AND DR7 ============= */
   {
@@ -720,4 +703,79 @@ void vm_resume_instruction(void) {
     __asm__ volatile("vmxoff\n\t" ::: "cc");
     printk(KERN_ERR "[*] Hyperion: VMRESUME error: 0x%llx\n", error_code);
   }
+}
+
+/*
+ * VirtualizeCurrentSystem
+ *
+ * Called per-CPU from VmxSaveState.  Clears the VMCS state, loads the
+ * current VMCS, configures all VMCS fields (including setting GUEST_RIP
+ * = VmxRestoreState and GUEST_RSP = the saved RSP), and executes VMLAUNCH.
+ *
+ * Parameters (System V AMD64 ABI):
+ *   RDI = ProcessorID   — which logical CPU this is
+ *   RSI = EPTP          — Extended Page Table Pointer
+ *   RDX = GuestStack    — the saved RSP to use as GUEST_RSP
+ */
+void VirtualizeCurrentSystem(int ProcessorID, uint64_t EPTP, void *GuestStack) {
+  printk(KERN_INFO
+         "\n========== Virtualizing Current System (CPU%d) ==========\n",
+         ProcessorID);
+
+  if (!clear_vmcs_state(&g_guest_state[ProcessorID])) {
+    printk(KERN_ERR "[*] Hyperion: VMCLEAR failed on CPU%d\n", ProcessorID);
+    return;
+  }
+
+  if (!allocate_vmcs_region(&g_guest_state[ProcessorID])) {
+    printk(KERN_ERR "[*] Hyperion: VMPTRLD failed on CPU%d\n", ProcessorID);
+    return;
+  }
+
+  printk(KERN_INFO
+         "[*] Hyperion: Setting up VMCS for current system (CPU%d).\n",
+         ProcessorID);
+  SetupVmcsAndVirtualizeMachine(&g_guest_state[ProcessorID], EPTP, GuestStack);
+
+  /*
+   * Optionally configure MSR Bitmap here.
+   * Example: detect reads and writes to MSR 0xC0000082 (LSTAR).
+   * SetMSRBitmap(0xc0000082, ProcessorID, TRUE, TRUE);
+   */
+
+  printk(KERN_INFO "[*] Hyperion: Executing VMLAUNCH on CPU%d.\n", ProcessorID);
+
+  // Execute VMLAUNCH
+  {
+    uint8_t status = 0;
+    __asm__ volatile("vmlaunch\n\t"
+                     "setna %0\n\t"
+                     : "=qm"(status)
+                     :
+                     : "cc", "memory");
+
+    if (status) {
+      uint64_t error_code = 0;
+      vmread(VM_INSTRUCTION_ERROR, &error_code);
+      __asm__ volatile("vmxoff\n\t" ::: "cc");
+      printk(KERN_ERR "[*] Hyperion: VMLAUNCH error: 0x%llx (CPU%d)\n",
+             error_code, ProcessorID);
+    }
+  }
+}
+
+/*
+ * SetupVmcsAndVirtualizeMachine
+ *
+ * Configures the VMCS so that the guest state mirrors the current host
+ * state.  GUEST_RIP is set to VmxRestoreState, and GUEST_RSP is set to
+ * the stack pointer we captured before the launch.
+ */
+static void
+SetupVmcsAndVirtualizeMachine(struct virtual_machine_state *guest_state,
+                              uint64_t EPTP, void *GuestStack) {
+  setup_vmcs(guest_state, EPTP);
+
+  vmwrite(GUEST_RIP, (uint64_t)VmxRestoreState);
+  vmwrite(GUEST_RSP, (uint64_t)GuestStack);
 }

@@ -48,6 +48,30 @@ struct virtual_machine_state {
 extern struct virtual_machine_state *g_guest_state;
 extern int processor_count;
 
+typedef struct _GUEST_REGS {
+  uint64_t rax;
+  uint64_t rcx;
+  uint64_t rdx;
+  uint64_t rbx;
+  uint64_t rsp;
+  uint64_t rbp;
+  uint64_t rsi;
+  uint64_t rdi;
+  uint64_t r8;
+  uint64_t r9;
+  uint64_t r10;
+  uint64_t r11;
+  uint64_t r12;
+  uint64_t r13;
+  uint64_t r14;
+  uint64_t r15;
+} GUEST_REGS, *PGUEST_REGS;
+
+extern void VmxSaveState(void);
+extern void VmxRestoreState(void);
+extern void VirtualizeCurrentSystem(int ProcessorID, uint64_t EPTP,
+                                    void *GuestStack);
+
 bool is_vmx_supported(void);
 bool initialize_vmx(void);
 void terminate_vmx(void);
@@ -219,11 +243,14 @@ enum vmcs_fields {
 
 #define CPU_BASED_CTL2_ENABLE_EPT 0x00000002
 #define CPU_BASED_CTL2_RDTSCP 0x00000008
+#define CPU_BASED_CTL2_ENABLE_INVPCID 0x00001000
 #define CPU_BASED_CTL2_ENABLE_VPID 0x00000020
+#define CPU_BASED_CTL2_ENABLE_XSAVE_XRSTORS 0x00100000
 #define CPU_BASED_CTL2_UNRESTRICTED_GUEST 0x00000080
 #define CPU_BASED_CTL2_ENABLE_VMFUNC 0x00002000
 
 #define VM_ENTRY_IA32E_MODE 0x00000200
+#define VM_EXIT_IA32E_MODE 0x00000200
 #define VM_ENTRY_SMM 0x00000400
 #define VM_ENTRY_DEACT_DUAL_MONITOR 0x00000800
 #define VM_ENTRY_LOAD_GUEST_PAT 0x00004000
