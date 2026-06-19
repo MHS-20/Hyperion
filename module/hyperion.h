@@ -104,6 +104,10 @@ bool EptSplitLargePage(VMM_EPT_PAGE_TABLE *EptPageTable,
                        uint64_t PhysicalAddress, int CoreIndex);
 bool EptVmxRootModePageHook(void *TargetFunc, bool HasLaunched);
 bool EptHandleEptViolation(uint64_t ExitQualification, uint64_t GuestPhysicalAddr);
+uint8_t Invept(uint32_t Type, INVEPT_DESCRIPTOR *Descriptor);
+uint8_t InveptAllContexts(void);
+uint8_t InveptSingleContext(uint64_t EptPointer);
+void HvNotifyAllToInvalidateEpt(void);
 
 uint64_t vmptrst_instruction(void);
 uint8_t main_vmexit_handler(uint64_t *guest_regs);

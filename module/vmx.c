@@ -840,6 +840,14 @@ int VmxVmcallHandler(uint64_t VmcallNumber, uint64_t OptionalParam1,
     if (EptVmxRootModePageHook((void *)OptionalParam1, true))
       VmcallStatus = 0;
     break;
+  case VMCALL_INVEPT_SINGLE_CONTEXT:
+    InveptSingleContext(OptionalParam1);
+    VmcallStatus = 0;
+    break;
+  case VMCALL_INVEPT_ALL_CONTEXT:
+    InveptAllContexts();
+    VmcallStatus = 0;
+    break;
   default:
     printk(KERN_WARNING "[*] Hyperion: unsupported VMCALL 0x%llx\n",
            VmcallNumber);

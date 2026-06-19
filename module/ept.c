@@ -3,6 +3,7 @@
 #include "vmx.h"
 #include <linux/mm.h>
 #include <linux/slab.h>
+#include <linux/smp.h>
 
 #ifndef MSR_IA32_MTRR_CAPABILITIES
 #define MSR_IA32_MTRR_CAPABILITIES 0xFE
@@ -357,6 +358,64 @@ bool EptHandleEptViolation(uint64_t ExitQualification,
   pr_err("[*] Hyperion: unexpected EPT violation at GPA=0x%llx\n",
          GuestPhysicalAddr);
   return false;
+}
+
+/* --- INVEPT and cache invalidation --- */
+
+static uint8_t AsmInvept(uint32_t Type, INVEPT_DESCRIPTOR *Descriptor) {
+  struct {
+    uint64_t ept_pointer;
+    uint64_t reserved;
+  } operand = {0};
+  uint8_t result = 0;
+
+  if (Descriptor) {
+    operand.ept_pointer = Descriptor->ept_pointer;
+    operand.reserved = Descriptor->reserved;
+  }
+
+  asm volatile(".intel_syntax noprefix\n\t"
+               "invept %[type], oword ptr [%[desc]]\n\t"
+               "setna %[result]\n\t"
+               ".att_syntax prefix\n\t"
+               : [result] "=q"(result)
+               : [type] "r"((uint64_t)Type),
+                 [desc] "r"(&operand)
+               : "cc", "memory");
+
+  return result;
+}
+
+uint8_t Invept(uint32_t Type, INVEPT_DESCRIPTOR *Descriptor) {
+  if (!Descriptor) {
+    INVEPT_DESCRIPTOR ZeroDescriptor = {0};
+    return AsmInvept(Type, &ZeroDescriptor);
+  }
+  return AsmInvept(Type, Descriptor);
+}
+
+uint8_t InveptAllContexts(void) {
+  return Invept(INVEPT_ALL_CONTEXTS, NULL);
+}
+
+uint8_t InveptSingleContext(uint64_t EptPointer) {
+  INVEPT_DESCRIPTOR Descriptor;
+  Descriptor.ept_pointer = EptPointer;
+  Descriptor.reserved = 0;
+  return Invept(INVEPT_SINGLE_CONTEXT, &Descriptor);
+}
+
+static void HvInvalidateEptByVmcall(void *info) {
+  uint64_t Context = (uint64_t)info;
+  if (Context == 0)
+    AsmVmxVmcall(VMCALL_INVEPT_ALL_CONTEXT, 0, 0, 0);
+  else
+    AsmVmxVmcall(VMCALL_INVEPT_SINGLE_CONTEXT, Context, 0, 0);
+}
+
+void HvNotifyAllToInvalidateEpt(void) {
+  on_each_cpu(HvInvalidateEptByVmcall,
+              (void *)(uintptr_t)g_ept_state->EptPointer.all, 1);
 }
 
 static bool EptBuildMtrrMap(void) {

@@ -235,6 +235,17 @@ typedef union _EPT_PML1_ENTRY {
   } fields;
 } EPT_PML1_ENTRY;
 
+/* INVEPT descriptor (Intel SDM 30.3) */
+typedef struct {
+  uint64_t ept_pointer;
+  uint64_t reserved;
+} INVEPT_DESCRIPTOR;
+
+typedef enum {
+  INVEPT_SINGLE_CONTEXT = 1,
+  INVEPT_ALL_CONTEXTS   = 2
+} INVEPT_TYPE;
+
 #ifdef __KERNEL__
 #include <linux/list.h>
 
