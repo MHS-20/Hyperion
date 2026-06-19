@@ -161,25 +161,7 @@ asm_vmexit_handler:
 VmxoffHandler:
     vmxoff
 
-    sub     $0x20, %rsp           /* shadow space */
-
-    call    HvReturnStackPointerForVmxoff
-    mov     %rax, 0x78(%rsp)      /* save guest RSP */
-
-    call    HvReturnInstructionPointerForVmxoff
-    mov     %rax, %rdx            /* save guest RIP in RDX */
-
-    mov     0x78(%rsp), %rbx      /* load saved RSP */
-    mov     %rsp, %rcx            /* save current RSP */
-    mov     %rbx, %rsp            /* switch to guest stack */
-    push    %rdx                  /* push return address */
-    mov     %rcx, %rsp            /* restore VMM stack */
-
-    sub     $0x08, %rbx           /* account for the push */
-    mov     %rbx, 0x78(%rsp)       /* save updated guest RSP */
-
-    add     $0x20, %rsp           /* remove shadow space */
-
+    /* Pop all saved GPRs from the VMM stack (same as the resume path) */
     pop     %rax
     pop     %rcx
     pop     %rdx
@@ -197,9 +179,21 @@ VmxoffHandler:
     pop     %r14
     pop     %r15
 
-    pop     %rsp                  /* restore guest RSP */
+    /*
+     * Now load the per-core return state directly.
+     * The magic CPUID handler or VmxVmxoff() saved the guest RIP and RSP
+     * into g_guest_state[CPU].vmxoff_state before VMXOFF.
+     */
+    sub     $0x20, %rsp           /* shadow space */
+    call    HvReturnStackPointerForVmxoff
+    add     $0x20, %rsp
+    mov     %rax, %rsp            /* switch to guest stack */
+
+    sub     $0x20, %rsp           /* shadow space */
+    call    HvReturnInstructionPointerForVmxoff
+    add     $0x20, %rsp
     ANNOTATE_RETPOLINE_SAFE
-    ret                           /* jump back to where VMCALL was called */
+    jmp     *%rax                  /* jump back to guest code */
 
 
 # ---------------------------------------------------------------------------
