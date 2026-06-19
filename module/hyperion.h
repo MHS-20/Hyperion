@@ -50,6 +50,8 @@ struct virtual_machine_state {
   void *vmcs_alloc;      /* original kmalloc ptr for vmcs_region  (for kfree) */
   void *vmm_stack_virt;  /* virtual address of VMM stack (for kfree) */
   void *msr_bitmap_virt; /* virtual address of MSR Bitmap (for kfree) */
+  void *pre_allocated_buffer; /* pre-allocated buffer for VMX root mode EPT splitting */
+  bool increment_rip;    /* if false, don't advance GUEST_RIP on VMRESUME */
 #endif
 };
 
@@ -92,6 +94,16 @@ bool clear_vmcs_state(struct virtual_machine_state *guest_state);
 
 uint64_t initialize_eptp(void);
 bool EptLogicalProcessorInitialize(void);
+bool EptPageHook(void *TargetFunc, bool HasLaunched);
+EPT_PML2_ENTRY *EptGetPml2Entry(VMM_EPT_PAGE_TABLE *EptPageTable,
+                                 uint64_t PhysicalAddress);
+EPT_PML1_ENTRY *EptGetPml1Entry(VMM_EPT_PAGE_TABLE *EptPageTable,
+                                 uint64_t PhysicalAddress);
+bool EptSplitLargePage(VMM_EPT_PAGE_TABLE *EptPageTable,
+                       void *PreAllocatedBuffer,
+                       uint64_t PhysicalAddress, int CoreIndex);
+bool EptVmxRootModePageHook(void *TargetFunc, bool HasLaunched);
+bool EptHandleEptViolation(uint64_t ExitQualification, uint64_t GuestPhysicalAddr);
 
 uint64_t vmptrst_instruction(void);
 uint8_t main_vmexit_handler(uint64_t *guest_regs);

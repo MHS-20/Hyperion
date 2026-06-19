@@ -1,5 +1,6 @@
 #include "ept.h"
 #include "hyperion.h"
+#include "vmx.h"
 #include <linux/mm.h>
 #include <linux/slab.h>
 
@@ -154,6 +155,208 @@ uint64_t initialize_eptp(void) {
   if (!EptLogicalProcessorInitialize())
     return 0;
   return g_ept_state->EptPointer.all;
+}
+
+/* --- EPT page hook infrastructure --- */
+
+EPT_PML2_ENTRY *EptGetPml2Entry(VMM_EPT_PAGE_TABLE *EptPageTable,
+                                 uint64_t PhysicalAddress) {
+  uint64_t Directory = ADDRMASK_EPT_PML2_INDEX(PhysicalAddress);
+  uint64_t DirectoryPointer = ADDRMASK_EPT_PML3_INDEX(PhysicalAddress);
+  uint64_t PML4Entry = ADDRMASK_EPT_PML4_INDEX(PhysicalAddress);
+
+  if (PML4Entry > 0)
+    return NULL;
+
+  return &EptPageTable->PML2[DirectoryPointer][Directory];
+}
+
+EPT_PML1_ENTRY *EptGetPml1Entry(VMM_EPT_PAGE_TABLE *EptPageTable,
+                                 uint64_t PhysicalAddress) {
+  EPT_PML2_ENTRY *PML2;
+  EPT_PML1_ENTRY *PML1;
+  EPT_PML2_POINTER *PML2Pointer;
+  uint64_t Directory = ADDRMASK_EPT_PML2_INDEX(PhysicalAddress);
+  uint64_t DirectoryPointer = ADDRMASK_EPT_PML3_INDEX(PhysicalAddress);
+  uint64_t PML4Entry = ADDRMASK_EPT_PML4_INDEX(PhysicalAddress);
+
+  if (PML4Entry > 0)
+    return NULL;
+
+  PML2 = &EptPageTable->PML2[DirectoryPointer][Directory];
+
+  if (PML2->fields.large_page)
+    return NULL;
+
+  PML2Pointer = (EPT_PML2_POINTER *)PML2;
+  PML1 = (EPT_PML1_ENTRY *)physical_to_virtual(
+      (uint64_t)(PML2Pointer->fields.physical_address * PAGE_SIZE));
+
+  if (!PML1)
+    return NULL;
+
+  return &PML1[ADDRMASK_EPT_PML1_INDEX(PhysicalAddress)];
+}
+
+bool EptSplitLargePage(VMM_EPT_PAGE_TABLE *EptPageTable, void *PreAllocatedBuffer,
+                       uint64_t PhysicalAddress, int CoreIndex) {
+  VMM_EPT_DYNAMIC_SPLIT *NewSplit;
+  EPT_PML1_ENTRY EntryTemplate;
+  EPT_PML2_ENTRY *TargetEntry;
+  EPT_PML2_POINTER NewPointer;
+
+  TargetEntry = EptGetPml2Entry(EptPageTable, PhysicalAddress);
+  if (!TargetEntry) {
+    pr_err("[*] Hyperion: invalid physical address for page split\n");
+    return false;
+  }
+
+  if (!TargetEntry->fields.large_page)
+    return true;
+
+  g_guest_state[CoreIndex].pre_allocated_buffer = NULL;
+
+  NewSplit = (VMM_EPT_DYNAMIC_SPLIT *)PreAllocatedBuffer;
+  if (!NewSplit) {
+    pr_err("[*] Hyperion: failed to allocate dynamic split memory\n");
+    return false;
+  }
+  memset(NewSplit, 0, sizeof(VMM_EPT_DYNAMIC_SPLIT));
+
+  NewSplit->Entry = TargetEntry;
+
+  EntryTemplate.all = 0;
+  EntryTemplate.fields.read = 1;
+  EntryTemplate.fields.write = 1;
+  EntryTemplate.fields.execute = 1;
+
+  for (int i = 0; i < VMM_EPT_PML1E_COUNT; i++)
+    NewSplit->PML1[i] = EntryTemplate;
+
+  for (int EntryIndex = 0; EntryIndex < VMM_EPT_PML1E_COUNT; EntryIndex++) {
+    NewSplit->PML1[EntryIndex].fields.physical_address =
+        ((TargetEntry->fields.page_frame_number * SIZE_2_MB) / PAGE_SIZE) +
+        EntryIndex;
+  }
+
+  NewPointer.all = 0;
+  NewPointer.fields.read = 1;
+  NewPointer.fields.write = 1;
+  NewPointer.fields.execute = 1;
+  NewPointer.fields.physical_address =
+      virtual_to_physical(&NewSplit->PML1[0]) / PAGE_SIZE;
+
+  list_add(&NewSplit->DynamicSplitList, &EptPageTable->DynamicSplitList);
+  memcpy(TargetEntry, &NewPointer, sizeof(NewPointer));
+
+  return true;
+}
+
+bool EptVmxRootModePageHook(void *TargetFunc, bool HasLaunched) {
+  int LogicalCoreIndex = smp_processor_id();
+  void *VirtualTarget = (void *)((uintptr_t)TargetFunc & ~(PAGE_SIZE - 1));
+  uint64_t PhysicalAddress;
+  EPT_PML1_ENTRY *TargetPage;
+  EPT_PML1_ENTRY OriginalEntry;
+  void *TargetBuffer;
+
+  PhysicalAddress = virtual_to_physical(VirtualTarget);
+  TargetBuffer = g_guest_state[LogicalCoreIndex].pre_allocated_buffer;
+
+  if (!EptSplitLargePage(g_ept_state->EptPageTable, TargetBuffer,
+                         PhysicalAddress, LogicalCoreIndex)) {
+    pr_err("[*] Hyperion: could not split page for address 0x%llx\n",
+           PhysicalAddress);
+    return false;
+  }
+
+  TargetPage = EptGetPml1Entry(g_ept_state->EptPageTable, PhysicalAddress);
+  if (!TargetPage) {
+    pr_err("[*] Hyperion: failed to get PML1 entry of target address\n");
+    return false;
+  }
+
+  OriginalEntry = *TargetPage;
+  OriginalEntry.fields.read = 1;
+  OriginalEntry.fields.write = 1;
+  OriginalEntry.fields.execute = 0;
+  TargetPage->all = OriginalEntry.all;
+
+  printk(KERN_INFO "[*] Hyperion: hook applied at phys=0x%llx "
+                   "(execute disabled)\n",
+         PhysicalAddress);
+
+  return true;
+}
+
+bool EptPageHook(void *TargetFunc, bool HasLaunched) {
+  int LogicalCoreIndex = smp_processor_id();
+
+  if (g_guest_state[LogicalCoreIndex].pre_allocated_buffer == NULL) {
+    void *PreAllocBuff = kmalloc(sizeof(VMM_EPT_DYNAMIC_SPLIT), GFP_KERNEL);
+    if (!PreAllocBuff) {
+      pr_err("[*] Hyperion: insufficient memory for pre-allocated buffer\n");
+      return false;
+    }
+    memset(PreAllocBuff, 0, sizeof(VMM_EPT_DYNAMIC_SPLIT));
+    g_guest_state[LogicalCoreIndex].pre_allocated_buffer = PreAllocBuff;
+  }
+
+  if (HasLaunched) {
+    if (AsmVmxVmcall(VMCALL_EXEC_HOOK_PAGE, (uint64_t)TargetFunc, 0, 0) == 0) {
+      printk(KERN_INFO "[*] Hyperion: hook applied from VMX root mode\n");
+      return true;
+    }
+    return false;
+  }
+
+  return EptVmxRootModePageHook(TargetFunc, HasLaunched);
+}
+
+bool EptHandlePageHookExit(VMX_EXIT_QUALIFICATION_EPT_VIOLATION ViolationQualification,
+                           uint64_t GuestPhysicalAddr) {
+  uint64_t PhysicalAddress = GuestPhysicalAddr & ~(PAGE_SIZE - 1);
+  EPT_PML1_ENTRY *TargetPage;
+
+  if (!PhysicalAddress) {
+    pr_err("[*] Hyperion: target address could not be mapped\n");
+    return false;
+  }
+
+  TargetPage = EptGetPml1Entry(g_ept_state->EptPageTable, PhysicalAddress);
+  if (!TargetPage) {
+    pr_err("[*] Hyperion: failed to get PML1 entry for target address\n");
+    return false;
+  }
+
+  if (!ViolationQualification.fields.ept_executable &&
+      ViolationQualification.fields.execute_access) {
+    TargetPage->fields.execute = 1;
+
+    /* Redo the instruction */
+    g_guest_state[smp_processor_id()].increment_rip = false;
+
+    printk(KERN_INFO "[*] Hyperion: set Execute Access of page "
+                     "(PFN=0x%llx) to 1\n",
+           TargetPage->fields.physical_address);
+
+    return true;
+  }
+
+  return false;
+}
+
+bool EptHandleEptViolation(uint64_t ExitQualification,
+                           uint64_t GuestPhysicalAddr) {
+  VMX_EXIT_QUALIFICATION_EPT_VIOLATION qual;
+  qual.all = ExitQualification;
+
+  if (EptHandlePageHookExit(qual, GuestPhysicalAddr))
+    return true;
+
+  pr_err("[*] Hyperion: unexpected EPT violation at GPA=0x%llx\n",
+         GuestPhysicalAddr);
+  return false;
 }
 
 static bool EptBuildMtrrMap(void) {

@@ -836,6 +836,10 @@ int VmxVmcallHandler(uint64_t VmcallNumber, uint64_t OptionalParam1,
   case VMCALL_TEST:
     VmcallStatus = VmcallTest(OptionalParam1, OptionalParam2, OptionalParam3);
     break;
+  case VMCALL_EXEC_HOOK_PAGE:
+    if (EptVmxRootModePageHook((void *)OptionalParam1, true))
+      VmcallStatus = 0;
+    break;
   default:
     printk(KERN_WARNING "[*] Hyperion: unsupported VMCALL 0x%llx\n",
            VmcallNumber);
@@ -1004,9 +1008,10 @@ uint8_t main_vmexit_handler(uint64_t *guest_regs) {
     uint64_t guest_phys = 0;
     vmread(EXIT_QUALIFICATION, &exit_qual);
     vmread(GUEST_PHYSICAL_ADDRESS, &guest_phys);
-    printk(KERN_INFO "[*] Hyperion: EPT violation at GPA=0x%llx "
-                     "qual=0x%llx\n",
-           guest_phys, exit_qual);
+
+    if (EptHandleEptViolation(exit_qual, guest_phys))
+      g_guest_state[smp_processor_id()].increment_rip = false;
+
     break;
   }
 
