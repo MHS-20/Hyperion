@@ -180,3 +180,16 @@ VmxoffHandler:
     mov     g_GuestRSP(%rip), %rsp
     ANNOTATE_RETPOLINE_SAFE
     jmp     *g_GuestRIP(%rip)
+
+
+# ---------------------------------------------------------------------------
+# AsmVmxVmcall
+# Executes the VMCALL instruction.  Parameters are passed in registers
+# according to the System V AMD64 ABI (RDI, RSI, RDX, RCX) and are left
+# untouched so the VM-exit handler can read them from the saved guest state.
+# The return value (RAX) is set by the VMCALL handler in VMX root mode.
+# ---------------------------------------------------------------------------
+.globl AsmVmxVmcall
+AsmVmxVmcall:
+    vmcall
+    ret

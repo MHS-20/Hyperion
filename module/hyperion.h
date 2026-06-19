@@ -23,6 +23,13 @@ uint64_t virtual_to_physical(void *va);
 /* Example: send a buffer to the kernel */
 #define IOCTL_SEND_BUFFER _IOW(HYPERION_MAGIC, 2, unsigned long)
 
+/* VMCALL service numbers — used to request services from VMX root mode */
+#define VMCALL_TEST                    0x1
+#define VMCALL_VMXOFF                  0x2
+#define VMCALL_EXEC_HOOK_PAGE          0x3
+#define VMCALL_INVEPT_ALL_CONTEXT      0x4
+#define VMCALL_INVEPT_SINGLE_CONTEXT   0x5
+
 struct virtual_machine_state {
   /* Physical addresses of the VMXON and VMCS regions */
   uint64_t vmxon_region;
@@ -72,6 +79,8 @@ extern void VmxSaveState(void);
 extern void VmxRestoreState(void);
 extern void VirtualizeCurrentSystem(int ProcessorID, uint64_t EPTP,
                                     void *GuestStack);
+extern uint64_t AsmVmxVmcall(uint64_t VmcallNumber, uint64_t OptionalParam1,
+                             uint64_t OptionalParam2, uint64_t OptionalParam3);
 
 bool is_vmx_supported(void);
 bool initialize_vmx(void);

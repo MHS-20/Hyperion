@@ -814,6 +814,31 @@ static void HandleControlRegisterAccess(PGUEST_REGS GuestState) {
   }
 }
 
+static int VmcallTest(uint64_t Param1, uint64_t Param2, uint64_t Param3) {
+  printk(KERN_INFO "[*] Hyperion: VmcallTest called with "
+                   "Param1=0x%llx Param2=0x%llx Param3=0x%llx\n",
+         Param1, Param2, Param3);
+  return 0;
+}
+
+int VmxVmcallHandler(uint64_t VmcallNumber, uint64_t OptionalParam1,
+                     uint64_t OptionalParam2, uint64_t OptionalParam3) {
+  int VmcallStatus = -1;
+
+  switch (VmcallNumber) {
+  case VMCALL_TEST:
+    VmcallStatus = VmcallTest(OptionalParam1, OptionalParam2, OptionalParam3);
+    break;
+  default:
+    printk(KERN_WARNING "[*] Hyperion: unsupported VMCALL 0x%llx\n",
+           VmcallNumber);
+    VmcallStatus = -1;
+    break;
+  }
+
+  return VmcallStatus;
+}
+
 static bool HandleCPUID(PGUEST_REGS state) {
   int CpuInfo[4] = {0};
   uint64_t Mode = 0;
@@ -917,6 +942,13 @@ uint8_t main_vmexit_handler(uint64_t *guest_regs) {
   case EXIT_REASON_RDTSCP:
     resume_to_next_instruction();
     break;
+
+  case EXIT_REASON_VMCALL: {
+    GuestRegs->rax = VmxVmcallHandler(GuestRegs->rdi, GuestRegs->rsi,
+                                      GuestRegs->rdx, GuestRegs->rcx);
+    resume_to_next_instruction();
+    break;
+  }
 
   case EXIT_REASON_HLT:
     printk(KERN_INFO "[*] Hyperion: HLT detected in guest — "
