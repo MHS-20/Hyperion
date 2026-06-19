@@ -102,3 +102,61 @@ typedef union _EPT_PTE {
         : 1; /* bit  63   — suppress EPT-violation (#VE) for this page */
   } fields;
 } EPT_PTE;
+
+/* ---- Memory type constants (from MTRR/PAT) ---- */
+#define MEMORY_TYPE_UNCACHEABLE     0
+#define MEMORY_TYPE_WRITE_COMBINING 1
+#define MEMORY_TYPE_WRITE_THROUGH   4
+#define MEMORY_TYPE_WRITE_PROTECT   5
+#define MEMORY_TYPE_WRITE_BACK      6
+
+#define MAX_MTRR_RANGES 64
+
+/* MTRR register layouts */
+typedef union {
+  uint64_t all;
+  struct {
+    uint64_t type              : 8;
+    uint64_t reserved1         : 4;
+    uint64_t page_frame_number : 40;
+    uint64_t reserved2         : 12;
+  } fields;
+} IA32_MTRR_PHYSBASE_REGISTER;
+
+typedef union {
+  uint64_t all;
+  struct {
+    uint64_t valid             : 1;
+    uint64_t reserved1         : 11;
+    uint64_t page_frame_number : 40;
+    uint64_t reserved2         : 12;
+  } fields;
+} IA32_MTRR_PHYSMASK_REGISTER;
+
+typedef union {
+  uint64_t all;
+  struct {
+    uint64_t variable_range_count : 8;
+    uint64_t fixed_range_support  : 1;
+    uint64_t reserved1            : 55;
+  } fields;
+} IA32_MTRR_CAPABILITIES_REGISTER;
+
+/* A single MTRR variable range descriptor */
+typedef struct {
+  uint64_t PhysicalBaseAddress;
+  uint64_t PhysicalEndAddress;
+  uint8_t  MemoryType;
+} MTRR_RANGE_DESCRIPTOR;
+
+/* IA32_MTRR_DEF_TYPE MSR layout */
+typedef union {
+  uint64_t all;
+  struct {
+    uint64_t default_memory_type : 3;
+    uint64_t reserved1           : 7;
+    uint64_t fixed_range_enable  : 1;
+    uint64_t mtrr_enable         : 1;
+    uint64_t reserved2           : 52;
+  } fields;
+} IA32_MTRR_DEF_TYPE_REGISTER;

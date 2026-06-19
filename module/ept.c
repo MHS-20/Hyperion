@@ -3,6 +3,95 @@
 #include <linux/mm.h>
 #include <linux/slab.h>
 
+#ifndef MSR_IA32_MTRR_CAPABILITIES
+#define MSR_IA32_MTRR_CAPABILITIES 0xFE
+#endif
+#ifndef MSR_IA32_MTRR_PHYSBASE0
+#define MSR_IA32_MTRR_PHYSBASE0 0x200
+#endif
+#ifndef MSR_IA32_MTRR_PHYSMASK0
+#define MSR_IA32_MTRR_PHYSMASK0 0x201
+#endif
+#ifndef MSR_IA32_MTRR_DEF_TYPE
+#define MSR_IA32_MTRR_DEF_TYPE 0x2FF
+#endif
+
+static MTRR_RANGE_DESCRIPTOR g_mtrr_ranges[MAX_MTRR_RANGES];
+static uint32_t g_mtrr_range_count = 0;
+
+static bool EptBuildMtrrMap(void) {
+  IA32_MTRR_CAPABILITIES_REGISTER MTRRCap;
+  IA32_MTRR_PHYSBASE_REGISTER CurrentPhysBase;
+  IA32_MTRR_PHYSMASK_REGISTER CurrentPhysMask;
+  MTRR_RANGE_DESCRIPTOR *Descriptor;
+  uint32_t CurrentRegister;
+  int NumberOfBitsInMask;
+
+  rdmsrl(MSR_IA32_MTRR_CAPABILITIES, MTRRCap.all);
+
+  for (CurrentRegister = 0;
+       CurrentRegister < MTRRCap.fields.variable_range_count;
+       CurrentRegister++) {
+    rdmsrl(MSR_IA32_MTRR_PHYSBASE0 + (CurrentRegister * 2), CurrentPhysBase.all);
+    rdmsrl(MSR_IA32_MTRR_PHYSMASK0 + (CurrentRegister * 2), CurrentPhysMask.all);
+
+    if (CurrentPhysMask.fields.valid) {
+      Descriptor = &g_mtrr_ranges[g_mtrr_range_count++];
+
+      Descriptor->PhysicalBaseAddress =
+          CurrentPhysBase.fields.page_frame_number * PAGE_SIZE;
+
+      uint64_t mask_aligned =
+          CurrentPhysMask.fields.page_frame_number * PAGE_SIZE;
+      NumberOfBitsInMask = __builtin_ctzll(mask_aligned);
+
+      Descriptor->PhysicalEndAddress =
+          Descriptor->PhysicalBaseAddress +
+          ((1ULL << NumberOfBitsInMask) - 1ULL);
+
+      Descriptor->MemoryType = (uint8_t)CurrentPhysBase.fields.type;
+
+      if (Descriptor->MemoryType == MEMORY_TYPE_WRITE_BACK) {
+        g_mtrr_range_count--;
+      }
+
+      printk(KERN_INFO "[*] Hyperion: MTRR Range: Base=0x%llx "
+                       "End=0x%llx Type=0x%x\n",
+             Descriptor->PhysicalBaseAddress, Descriptor->PhysicalEndAddress,
+             Descriptor->MemoryType);
+    }
+  }
+
+  printk(KERN_INFO "[*] Hyperion: Total MTRR Ranges Committed: %d\n",
+         g_mtrr_range_count);
+  return true;
+}
+
+static bool EptCheckFeatures(void) {
+  IA32_MTRR_DEF_TYPE_REGISTER MTRRDefType;
+  uint32_t eax, ebx, ecx, edx;
+
+  rdmsrl(MSR_IA32_MTRR_DEF_TYPE, MTRRDefType.all);
+
+  if (!MTRRDefType.fields.mtrr_enable) {
+    pr_err("[*] Hyperion: MTRR dynamic ranges not supported\n");
+    return false;
+  }
+
+  eax = 1;
+  asm volatile("cpuid"
+               : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+               : "a"(eax)
+               : "memory");
+
+  if (!(ecx & (1 << 5))) {
+    pr_err("[*] Hyperion: VMX not supported\n");
+    return false;
+  }
+
+  return true;
+}
+
 uint64_t initialize_eptp(void) {
   EPTP *eptp;
   EPT_PML4E *ept_pml4;
