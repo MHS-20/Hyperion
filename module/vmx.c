@@ -1042,10 +1042,14 @@ uint8_t main_vmexit_handler(uint64_t *guest_regs) {
     bool term = HandleCPUID(GuestRegs);
     if (term) {
       uint64_t ExitInstructionLength = 0;
-      vmread(GUEST_RIP, &g_GuestRIP);
-      vmread(GUEST_RSP, &g_GuestRSP);
+      uint64_t rip = 0, rsp = 0;
+      int cpu = smp_processor_id();
+      vmread(GUEST_RIP, &rip);
+      vmread(GUEST_RSP, &rsp);
       vmread(VM_EXIT_INSTRUCTION_LEN, &ExitInstructionLength);
-      g_GuestRIP += ExitInstructionLength;
+      g_guest_state[cpu].vmxoff_state.guest_rip = rip + ExitInstructionLength;
+      g_guest_state[cpu].vmxoff_state.guest_rsp = rsp;
+      g_guest_state[cpu].vmxoff_state.is_vmxoff_executed = true;
       should_terminate = 1;
     } else {
       resume_to_next_instruction();
