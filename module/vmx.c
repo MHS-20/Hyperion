@@ -161,7 +161,12 @@ bool initialize_vmx(void) {
     return false;
   }
 
-  /* Phase 1: setup VMXON/VMCS/VMM stack/MSR bitmap/EPTP on all CPUs */
+  /* Initialize EPT on the current CPU only (before on_each_cpu)
+   * to avoid a race condition where multiple CPUs try to build
+   * the MTRR map and allocate the EPT table simultaneously. */
+  initialize_eptp();
+
+  /* Phase 1: setup VMXON/VMCS/VMM stack/MSR bitmap on all CPUs */
   on_each_cpu(vmx_init_on_cpu, NULL, 1);
 
   /* Phase 2: launch VMX non-root mode.
