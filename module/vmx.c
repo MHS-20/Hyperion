@@ -145,10 +145,6 @@ static void vmx_init_on_cpu(void *info) {
       virtual_to_physical(g_guest_state[cpu].msr_bitmap_virt);
 
   g_guest_state[cpu].eptp = initialize_eptp();
-  if (!g_guest_state[cpu].eptp) {
-    printk(KERN_ERR "[*] Hyperion: EPTP init failed on CPU %d\n", cpu);
-    return;
-  }
 
   __asm__ volatile("call VmxSaveState\n\t"
                    :
