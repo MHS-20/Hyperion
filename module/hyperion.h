@@ -23,6 +23,12 @@ uint64_t virtual_to_physical(void *va);
 /* Example: send a buffer to the kernel */
 #define IOCTL_SEND_BUFFER _IOW(HYPERION_MAGIC, 2, unsigned long)
 
+typedef struct {
+  bool     is_vmxoff_executed;
+  uint64_t guest_rip;
+  uint64_t guest_rsp;
+} VMX_VMXOFF_STATE;
+
 /* VMCALL service numbers — used to request services from VMX root mode */
 #define VMCALL_TEST                    0x1
 #define VMCALL_VMXOFF                  0x2
@@ -52,6 +58,7 @@ struct virtual_machine_state {
   void *msr_bitmap_virt; /* virtual address of MSR Bitmap (for kfree) */
   void *pre_allocated_buffer; /* pre-allocated buffer for VMX root mode EPT splitting */
   bool increment_rip;    /* if false, don't advance GUEST_RIP on VMRESUME */
+  VMX_VMXOFF_STATE vmxoff_state; /* per-core VMXOFF return state */
 #endif
 };
 
@@ -87,6 +94,10 @@ extern uint64_t AsmVmxVmcall(uint64_t VmcallNumber, uint64_t OptionalParam1,
 bool is_vmx_supported(void);
 bool initialize_vmx(void);
 void terminate_vmx(void);
+void HvTerminateVmx(void);
+void VmxVmxoff(void);
+uint64_t HvReturnStackPointerForVmxoff(void);
+uint64_t HvReturnInstructionPointerForVmxoff(void);
 
 bool allocate_vmxon_region(struct virtual_machine_state *state);
 bool allocate_vmcs_region(struct virtual_machine_state *state);

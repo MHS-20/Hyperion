@@ -836,6 +836,10 @@ int VmxVmcallHandler(uint64_t VmcallNumber, uint64_t OptionalParam1,
   case VMCALL_TEST:
     VmcallStatus = VmcallTest(OptionalParam1, OptionalParam2, OptionalParam3);
     break;
+  case VMCALL_VMXOFF:
+    VmxVmxoff();
+    VmcallStatus = 0;
+    break;
   case VMCALL_EXEC_HOOK_PAGE:
     if (EptVmxRootModePageHook((void *)OptionalParam1, true))
       VmcallStatus = 0;
@@ -856,6 +860,66 @@ int VmxVmcallHandler(uint64_t VmcallNumber, uint64_t OptionalParam1,
   }
 
   return VmcallStatus;
+}
+
+void VmxVmxoff(void) {
+  int cpu = smp_processor_id();
+  uint64_t GuestRSP = 0;
+  uint64_t GuestRIP = 0;
+  uint64_t GuestCr3 = 0;
+  uint64_t ExitInstructionLength = 0;
+
+  vmread(GUEST_CR3, &GuestCr3);
+  asm volatile("mov %0, %%cr3" :: "r"(GuestCr3) : "memory");
+
+  vmread(GUEST_RIP, &GuestRIP);
+  vmread(GUEST_RSP, &GuestRSP);
+  vmread(VM_EXIT_INSTRUCTION_LEN, &ExitInstructionLength);
+  GuestRIP += ExitInstructionLength;
+
+  g_guest_state[cpu].vmxoff_state.guest_rip = GuestRIP;
+  g_guest_state[cpu].vmxoff_state.guest_rsp = GuestRSP;
+  g_guest_state[cpu].vmxoff_state.is_vmxoff_executed = true;
+
+  asm volatile("vmxoff" ::: "cc");
+}
+
+uint64_t HvReturnStackPointerForVmxoff(void) {
+  return g_guest_state[smp_processor_id()].vmxoff_state.guest_rsp;
+}
+
+uint64_t HvReturnInstructionPointerForVmxoff(void) {
+  return g_guest_state[smp_processor_id()].vmxoff_state.guest_rip;
+}
+
+static void VmxDpcBroadcastTerminate(void *info) {
+  AsmVmxVmcall(VMCALL_VMXOFF, 0, 0, 0);
+  kfree(g_guest_state[smp_processor_id()].vmxon_alloc);
+  kfree(g_guest_state[smp_processor_id()].vmcs_alloc);
+  kfree(g_guest_state[smp_processor_id()].vmm_stack_virt);
+  kfree(g_guest_state[smp_processor_id()].msr_bitmap_virt);
+}
+
+void HvTerminateVmx(void) {
+  on_each_cpu(VmxDpcBroadcastTerminate, NULL, 1);
+
+  if (g_ept_state) {
+    struct list_head *pos, *n;
+    list_for_each_safe(pos, n, &g_ept_state->EptPageTable->DynamicSplitList) {
+      VMM_EPT_DYNAMIC_SPLIT *split;
+      split = list_entry(pos, VMM_EPT_DYNAMIC_SPLIT, DynamicSplitList);
+      list_del(pos);
+      kfree(split);
+    }
+
+    int order = get_order(sizeof(VMM_EPT_PAGE_TABLE));
+    free_pages((unsigned long)g_ept_state->EptPageTable, order);
+    kfree(g_ept_state);
+    g_ept_state = NULL;
+  }
+
+  kfree(g_guest_state);
+  g_guest_state = NULL;
 }
 
 static bool HandleCPUID(PGUEST_REGS state) {
@@ -1036,6 +1100,9 @@ uint8_t main_vmexit_handler(uint64_t *guest_regs) {
            exit_reason, smp_processor_id());
     break;
   }
+
+  if (g_guest_state[smp_processor_id()].vmxoff_state.is_vmxoff_executed)
+    return 1;
 
   return should_terminate;
 }

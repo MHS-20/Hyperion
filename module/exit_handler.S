@@ -85,6 +85,9 @@ VmxRestoreState:
 .globl g_stack_pointer_for_returning
 .globl g_base_pointer_for_returning
 
+.extern HvReturnStackPointerForVmxoff
+.extern HvReturnInstructionPointerForVmxoff
+
 asm_vmxoff_and_restore_state:
     /* Turn off VMX */
     vmxoff
@@ -103,8 +106,6 @@ asm_vmxoff_and_restore_state:
 
 .extern main_vmexit_handler
 .extern vm_resume_instruction
-.extern g_GuestRIP
-.extern g_GuestRSP
 
 .globl asm_vmexit_handler
 asm_vmexit_handler:
@@ -160,11 +161,30 @@ asm_vmexit_handler:
 VmxoffHandler:
     vmxoff
 
+    sub     $0x20, %rsp           /* shadow space */
+
+    call    HvReturnStackPointerForVmxoff
+    mov     %rax, 0x88(%rsp)      /* save guest RSP */
+
+    call    HvReturnInstructionPointerForVmxoff
+    mov     %rax, %rdx            /* save guest RIP in RDX */
+
+    mov     0x88(%rsp), %rbx      /* load saved RSP */
+    mov     %rsp, %rcx            /* save current RSP */
+    mov     %rbx, %rsp            /* switch to guest stack */
+    push    %rdx                  /* push return address */
+    mov     %rcx, %rsp            /* restore VMM stack */
+
+    sub     $0x08, %rbx           /* account for the push */
+    mov     %rbx, 0x88(%rsp)       /* save updated guest RSP */
+
+    add     $0x20, %rsp           /* remove shadow space */
+
     pop     %rax
     pop     %rcx
     pop     %rdx
     pop     %rbx
-    pop     %rbp           /* discard extra RBP */
+    pop     %rbp                  /* discard extra RBP */
     pop     %rbp
     pop     %rsi
     pop     %rdi
@@ -177,9 +197,8 @@ VmxoffHandler:
     pop     %r14
     pop     %r15
 
-    mov     g_GuestRSP(%rip), %rsp
-    ANNOTATE_RETPOLINE_SAFE
-    jmp     *g_GuestRIP(%rip)
+    pop     %rsp                  /* restore guest RSP */
+    ret                           /* jump back to where VMCALL was called */
 
 
 # ---------------------------------------------------------------------------
