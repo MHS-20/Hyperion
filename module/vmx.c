@@ -853,9 +853,7 @@ int VmxVmcallHandler(uint64_t VmcallNumber, uint64_t OptionalParam1,
     VmcallStatus = 0;
     break;
   default:
-    printk(KERN_WARNING "[*] Hyperion: unsupported VMCALL 0x%llx\n",
-           VmcallNumber);
-    VmcallStatus = -1;
+    VmcallStatus = 0;
     break;
   }
 
@@ -972,7 +970,7 @@ uint8_t main_vmexit_handler(uint64_t *guest_regs) {
 
   exit_reason = exit_reason & 0xffff;
 
-  printk(KERN_INFO "[*] Hyperion: VM_EXIT_REASON 0x%llx on CPU %d\n",
+  printk_ratelimited(KERN_INFO "[*] Hyperion: VM_EXIT_REASON 0x%llx on CPU %d\n",
          exit_reason, smp_processor_id());
 
   switch (exit_reason) {
@@ -1098,7 +1096,7 @@ uint8_t main_vmexit_handler(uint64_t *guest_regs) {
   }
 
   default:
-    printk(KERN_WARNING "[*] Hyperion: unhandled VM_EXIT_REASON 0x%llx on CPU %d\n",
+    printk_ratelimited(KERN_WARNING "[*] Hyperion: unhandled VM_EXIT_REASON 0x%llx on CPU %d\n",
            exit_reason, smp_processor_id());
     break;
   }
