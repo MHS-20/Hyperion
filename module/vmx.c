@@ -6,6 +6,7 @@
 #include <linux/io.h>
 #include <linux/slab.h>
 #include <linux/smp.h>
+#include <linux/list.h>
 
 #define VMM_STACK_SIZE (PAGE_SIZE * 2)
 
@@ -549,13 +550,14 @@ static bool setup_vmcs(struct virtual_machine_state *guest_state,
 
   /*
    * Secondary Processor-Based VM-Execution Controls:
-   *   CPU_BASED_CTL2_RDTSCP                  — enable RDTSCP instruction in the
-   * guest CPU_BASED_CTL2_ENABLE_INVPCID          — enable INVPCID instruction
-   * in the guest CPU_BASED_CTL2_ENABLE_XSAVE_XRSTORS    — enable XSAVE/XRSTORS
-   * in the guest
+   *   CPU_BASED_CTL2_RDTSCP              — enable RDTSCP instruction
+   *   CPU_BASED_CTL2_ENABLE_EPT          — enable Extended Page Tables
+   *   CPU_BASED_CTL2_ENABLE_INVPCID      — enable INVPCID instruction
+   *   CPU_BASED_CTL2_ENABLE_XSAVE_XRSTORS — enable XSAVE/XRSTORS
    */
   vmwrite(SECONDARY_VM_EXEC_CONTROL,
           adjust_controls(CPU_BASED_CTL2_RDTSCP |
+                              CPU_BASED_CTL2_ENABLE_EPT |
                               CPU_BASED_CTL2_ENABLE_INVPCID |
                               CPU_BASED_CTL2_ENABLE_XSAVE_XRSTORS,
                           MSR_IA32_VMX_PROCBASED_CTLS2));
@@ -674,6 +676,11 @@ static bool setup_vmcs(struct virtual_machine_state *guest_state,
   /* ============= MSR BITMAP ============= */
   vmwrite(MSR_BITMAP, guest_state->msr_bitmap_physical);
   vmwrite(MSR_BITMAP_HIGH, guest_state->msr_bitmap_physical >> 32);
+
+  /* ============= EPT POINTER ============= */
+  if (g_ept_state && g_ept_state->EptPointer.all) {
+    vmwrite(EPT_POINTER, g_ept_state->EptPointer.all);
+  }
 
   return true;
 }
@@ -989,6 +996,25 @@ uint8_t main_vmexit_handler(uint64_t *guest_regs) {
     printk(KERN_INFO "[*] Hyperion: WRMSR (bitmap) : 0x%x\n", ECX);
     HandleMSRWrite(GuestRegs);
     resume_to_next_instruction();
+    break;
+  }
+
+  case EXIT_REASON_EPT_VIOLATION: {
+    uint64_t exit_qual = 0;
+    uint64_t guest_phys = 0;
+    vmread(EXIT_QUALIFICATION, &exit_qual);
+    vmread(GUEST_PHYSICAL_ADDRESS, &guest_phys);
+    printk(KERN_INFO "[*] Hyperion: EPT violation at GPA=0x%llx "
+                     "qual=0x%llx\n",
+           guest_phys, exit_qual);
+    break;
+  }
+
+  case EXIT_REASON_EPT_MISCONFIG: {
+    uint64_t guest_phys = 0;
+    vmread(GUEST_PHYSICAL_ADDRESS, &guest_phys);
+    printk(KERN_ERR "[*] Hyperion: EPT misconfiguration at GPA=0x%llx\n",
+           guest_phys);
     break;
   }
 

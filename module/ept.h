@@ -260,4 +260,6 @@ typedef struct {
   VMM_EPT_PAGE_TABLE *EptPageTable;
   EPTP EptPointer;
 } EPT_STATE;
+
+extern EPT_STATE *g_ept_state;
 #endif

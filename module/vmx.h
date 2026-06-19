@@ -1,5 +1,11 @@
 #pragma once
 
+#ifdef __KERNEL__
+#include <linux/types.h>
+#else
+#include <stdint.h>
+#endif
+
 /* VM-exit reason codes */
 #define EXIT_REASON_EXCEPTION_NMI 0
 #define EXIT_REASON_EXTERNAL_INTERRUPT 1
@@ -66,3 +72,22 @@
 #define TYPE_MOV_FROM_CR 1
 #define TYPE_CLTS        2
 #define TYPE_LMSW        3
+
+typedef union _VMX_EXIT_QUALIFICATION_EPT_VIOLATION {
+  uint64_t all;
+  struct {
+    uint64_t read_access           : 1;
+    uint64_t write_access          : 1;
+    uint64_t execute_access        : 1;
+    uint64_t ept_readable          : 1;
+    uint64_t ept_writable          : 1;
+    uint64_t ept_executable        : 1;
+    uint64_t ept_usermode_readable : 1;
+    uint64_t ept_usermode_writable : 1;
+    uint64_t ept_usermode_executable: 1;
+    uint64_t gva_valid             : 1;
+    uint64_t reserved1             : 2;
+    uint64_t nmi_unblocking        : 1;
+    uint64_t reserved2             : 51;
+  } fields;
+} VMX_EXIT_QUALIFICATION_EPT_VIOLATION;
