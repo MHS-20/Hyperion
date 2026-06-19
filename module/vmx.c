@@ -29,6 +29,7 @@ static uint64_t g_Cr3TargetCount = 0;
 static void vmwrite(uint64_t field, uint64_t value);
 static void vmread(uint64_t field, uint64_t *value);
 static void resume_to_next_instruction(void);
+static void vmx_launch_on_cpu(void *info);
 static bool setup_vmcs(struct virtual_machine_state *guest_state,
                        uint64_t eptp_val);
 static void
@@ -111,10 +112,6 @@ static void vmx_init_on_cpu(void *info) {
   printk(KERN_INFO "[*] Hyperion: CPU %d — VMCS region  @ 0x%llx\n", cpu,
          g_guest_state[cpu].vmcs_region);
 
-  /*
-   * Allocate a dedicated stack for the VM-exit handler.
-   * VMM_STACK_SIZE bytes, zeroed, from the kernel heap.
-   */
   g_guest_state[cpu].vmm_stack_virt = kmalloc(VMM_STACK_SIZE, GFP_KERNEL);
   if (!g_guest_state[cpu].vmm_stack_virt) {
     printk(KERN_ERR "[*] Hyperion: failed to allocate VMM stack\n");
@@ -122,17 +119,9 @@ static void vmx_init_on_cpu(void *info) {
   }
   memset(g_guest_state[cpu].vmm_stack_virt, 0, VMM_STACK_SIZE);
 
-  /*
-   * HOST_RSP in the VMCS must point to the *top* of the stack since
-   * the stack grows downward on x86_64.
-   */
   g_guest_state[cpu].vmm_stack =
       (uint64_t)g_guest_state[cpu].vmm_stack_virt + VMM_STACK_SIZE - 1;
 
-  /*
-   * Allocate a 4KB page for the MSR Bitmap.
-   * All zeros means all MSR accesses cause VM-exits.
-   */
   g_guest_state[cpu].msr_bitmap_virt = kmalloc(PAGE_SIZE, GFP_KERNEL);
   if (!g_guest_state[cpu].msr_bitmap_virt) {
     printk(KERN_ERR "[*] Hyperion: failed to allocate MSR Bitmap\n");
@@ -145,6 +134,10 @@ static void vmx_init_on_cpu(void *info) {
       virtual_to_physical(g_guest_state[cpu].msr_bitmap_virt);
 
   g_guest_state[cpu].eptp = initialize_eptp();
+}
+
+static void vmx_launch_on_cpu(void *info) {
+  int cpu = smp_processor_id();
 
   __asm__ volatile("call VmxSaveState\n\t"
                    :
@@ -168,8 +161,12 @@ bool initialize_vmx(void) {
     return false;
   }
 
-  /* Run vmx_init_on_cpu() on every online logical processor */
+  /* Phase 1: setup VMXON/VMCS/VMM stack/MSR bitmap/EPTP on all CPUs */
   on_each_cpu(vmx_init_on_cpu, NULL, 1);
+
+  /* Phase 2: launch VMX non-root mode on all CPUs simultaneously */
+  on_each_cpu(vmx_launch_on_cpu, NULL, 1);
+
   return true;
 }
 
