@@ -16,8 +16,145 @@
 #define MSR_IA32_MTRR_DEF_TYPE 0x2FF
 #endif
 
+static bool EptCheckFeatures(void);
+static bool EptBuildMtrrMap(void);
+static void EptSetupPML2Entry(EPT_PML2_ENTRY *NewEntry, uint64_t PageFrameNumber);
+static VMM_EPT_PAGE_TABLE *EptAllocateAndCreateIdentityPageTable(void);
+
 static MTRR_RANGE_DESCRIPTOR g_mtrr_ranges[MAX_MTRR_RANGES];
 static uint32_t g_mtrr_range_count = 0;
+EPT_STATE *g_ept_state = NULL;
+
+static void EptSetupPML2Entry(EPT_PML2_ENTRY *NewEntry,
+                               uint64_t PageFrameNumber) {
+  uint64_t AddressOfPage = PageFrameNumber * SIZE_2_MB;
+  uint8_t TargetMemoryType = MEMORY_TYPE_WRITE_BACK;
+
+  NewEntry->fields.page_frame_number = PageFrameNumber;
+
+  for (uint32_t i = 0; i < g_mtrr_range_count; i++) {
+    if (AddressOfPage <= g_mtrr_ranges[i].PhysicalEndAddress) {
+      if ((AddressOfPage + SIZE_2_MB - 1) >=
+          g_mtrr_ranges[i].PhysicalBaseAddress) {
+        TargetMemoryType = g_mtrr_ranges[i].MemoryType;
+        if (TargetMemoryType == MEMORY_TYPE_UNCACHEABLE)
+          break;
+      }
+    }
+  }
+
+  NewEntry->fields.memory_type = TargetMemoryType;
+}
+
+static VMM_EPT_PAGE_TABLE *EptAllocateAndCreateIdentityPageTable(void) {
+  VMM_EPT_PAGE_TABLE *PageTable;
+  int order;
+
+  order = get_order(sizeof(VMM_EPT_PAGE_TABLE));
+  PageTable = (VMM_EPT_PAGE_TABLE *)__get_free_pages(GFP_KERNEL | __GFP_ZERO,
+                                                     order);
+  if (!PageTable) {
+    pr_err("[*] Hyperion: failed to allocate EPT page table\n");
+    return NULL;
+  }
+
+  INIT_LIST_HEAD(&PageTable->DynamicSplitList);
+
+  /* PML4[0] -> PML3 (covers 512 GB) */
+  EPT_PML4E pml4e = {0};
+  pml4e.fields.read = 1;
+  pml4e.fields.write = 1;
+  pml4e.fields.execute = 1;
+  pml4e.fields.physical_address =
+      virtual_to_physical(&PageTable->PML3[0]) / PAGE_SIZE;
+  PageTable->PML4[0] = pml4e;
+
+  /* PML3[i] -> PML2[i] (each covers 1 GB) */
+  EPT_PDPTE pdpte_template = {0};
+  pdpte_template.fields.read = 1;
+  pdpte_template.fields.write = 1;
+  pdpte_template.fields.execute = 1;
+
+  for (int i = 0; i < VMM_EPT_PML3E_COUNT; i++) {
+    EPT_PDPTE entry = pdpte_template;
+    entry.fields.physical_address =
+        virtual_to_physical(&PageTable->PML2[i][0]) / PAGE_SIZE;
+    PageTable->PML3[i] = entry;
+  }
+
+  /* PML2 — 2 MB large pages with MTRR-based memory types */
+  EPT_PML2_ENTRY pml2_template = {0};
+  pml2_template.fields.read = 1;
+  pml2_template.fields.write = 1;
+  pml2_template.fields.execute = 1;
+  pml2_template.fields.large_page = 1;
+
+  for (int group = 0; group < VMM_EPT_PML3E_COUNT; group++) {
+    for (int idx = 0; idx < VMM_EPT_PML2E_COUNT; idx++) {
+      EPT_PML2_ENTRY entry = pml2_template;
+      EptSetupPML2Entry(&entry,
+                        (group * VMM_EPT_PML2E_COUNT) + idx);
+      PageTable->PML2[group][idx] = entry;
+    }
+  }
+
+  return PageTable;
+}
+
+bool EptLogicalProcessorInitialize(void) {
+  VMM_EPT_PAGE_TABLE *PageTable;
+  EPTP eptp;
+
+  if (!EptCheckFeatures())
+    return false;
+
+  if (g_ept_state == NULL) {
+    g_ept_state = kzalloc(sizeof(EPT_STATE), GFP_KERNEL);
+    if (!g_ept_state) {
+      pr_err("[*] Hyperion: failed to allocate EPT state\n");
+      return false;
+    }
+
+    if (!EptBuildMtrrMap()) {
+      kfree(g_ept_state);
+      g_ept_state = NULL;
+      return false;
+    }
+
+    for (uint32_t i = 0; i < g_mtrr_range_count; i++)
+      g_ept_state->MemoryRanges[g_ept_state->NumberOfEnabledMemoryRanges++] =
+          g_mtrr_ranges[i];
+
+    PageTable = EptAllocateAndCreateIdentityPageTable();
+    if (!PageTable) {
+      pr_err("[*] Hyperion: unable to allocate memory for EPT\n");
+      kfree(g_ept_state);
+      g_ept_state = NULL;
+      return false;
+    }
+
+    g_ept_state->EptPageTable = PageTable;
+
+    memset(&eptp, 0, sizeof(eptp));
+    eptp.fields.memory_type = MEMORY_TYPE_WRITE_BACK;
+    eptp.fields.dirty_access_enabled = 0;
+    eptp.fields.page_walk_length = 3;
+    eptp.fields.pml4_address =
+        virtual_to_physical(&PageTable->PML4[0]) / PAGE_SIZE;
+
+    g_ept_state->EptPointer = eptp;
+  }
+
+  pr_info("[*] Hyperion: EPT pointer allocated at 0x%llx\n",
+          g_ept_state->EptPointer.all);
+  return true;
+}
+
+uint64_t initialize_eptp(void) {
+  if (!EptLogicalProcessorInitialize())
+    return 0;
+  return g_ept_state->EptPointer.all;
+}
 
 static bool EptBuildMtrrMap(void) {
   IA32_MTRR_CAPABILITIES_REGISTER MTRRCap;
@@ -90,149 +227,4 @@ static bool EptCheckFeatures(void) {
   }
 
   return true;
-}
-
-uint64_t initialize_eptp(void) {
-  EPTP *eptp;
-  EPT_PML4E *ept_pml4;
-  EPT_PDPTE *ept_pdpt;
-  EPT_PDE *ept_pd;
-  EPT_PTE *ept_pt;
-  void *guest_memory;
-
-  const int pages_to_allocate = 10;
-
-  eptp = kzalloc(sizeof(EPTP), GFP_KERNEL);
-  if (!eptp) {
-    pr_err("[*] Hyperion: failed to allocate EPTP\n");
-    return 0;
-  }
-
-  /* Allocate EPT PML4 table (512 × 8 bytes = 4096 bytes) */
-  ept_pml4 = kzalloc(PAGE_SIZE, GFP_KERNEL);
-  if (!ept_pml4) {
-    pr_err("[*] Hyperion: failed to allocate EPT PML4\n");
-    kfree(eptp);
-    return 0;
-  }
-
-  /* Allocate EPT Page-Directory-Pointer Table */
-  ept_pdpt = kzalloc(PAGE_SIZE, GFP_KERNEL);
-  if (!ept_pdpt) {
-    pr_err("[*] Hyperion: failed to allocate EPT PDPT\n");
-    kfree(ept_pml4);
-    kfree(eptp);
-    return 0;
-  }
-
-  /* Allocate EPT Page Directory */
-  ept_pd = kzalloc(PAGE_SIZE, GFP_KERNEL);
-  if (!ept_pd) {
-    pr_err("[*] Hyperion: failed to allocate EPT PD\n");
-    kfree(ept_pdpt);
-    kfree(ept_pml4);
-    kfree(eptp);
-    return 0;
-  }
-
-  /* Allocate EPT Page Table */
-  ept_pt = kzalloc(PAGE_SIZE, GFP_KERNEL);
-  if (!ept_pt) {
-    pr_err("[*] Hyperion: failed to allocate EPT PT\n");
-    kfree(ept_pd);
-    kfree(ept_pdpt);
-    kfree(ept_pml4);
-    kfree(eptp);
-    return 0;
-  }
-
-  /*
-   * Allocate contiguous guest memory.
-   * We need at minimum 2 pages (one for code, one for stack), but we
-   * allocate 10 to give the guest room to build its own internal page
-   * tables and data structures.
-   */
-  guest_memory = kzalloc(pages_to_allocate * PAGE_SIZE, GFP_KERNEL);
-  if (!guest_memory) {
-    pr_err("[*] Hyperion: failed to allocate guest memory\n");
-    kfree(ept_pt);
-    kfree(ept_pd);
-    kfree(ept_pdpt);
-    kfree(ept_pml4);
-    kfree(eptp);
-    return 0;
-  }
-
-  for (int i = 0; i < pages_to_allocate; i++) {
-    ept_pt[i].fields.accessed_flag = 0;
-    ept_pt[i].fields.dirty_flag = 0;
-    ept_pt[i].fields.ept_memory_type = 6; /* Write-Back */
-    ept_pt[i].fields.execute = 1;
-    ept_pt[i].fields.execute_for_usermode = 0;
-    ept_pt[i].fields.ignore_pat = 0;
-    ept_pt[i].fields.physical_address =
-        virtual_to_physical((uint8_t *)guest_memory + (i * PAGE_SIZE)) /
-        PAGE_SIZE;
-    ept_pt[i].fields.read = 1;
-    ept_pt[i].fields.suppress_ve = 0;
-    ept_pt[i].fields.write = 1;
-  }
-
-  /* Set up PDE — points to the base of the EPT PT */
-  ept_pd->fields.accessed = 0;
-  ept_pd->fields.execute = 1;
-  ept_pd->fields.execute_for_usermode = 0;
-  ept_pd->fields.ignored1 = 0;
-  ept_pd->fields.ignored2 = 0;
-  ept_pd->fields.ignored3 = 0;
-  ept_pd->fields.physical_address = virtual_to_physical(ept_pt) / PAGE_SIZE;
-  ept_pd->fields.read = 1;
-  ept_pd->fields.reserved1 = 0;
-  ept_pd->fields.reserved2 = 0;
-  ept_pd->fields.write = 1;
-
-  /* Set up PDPTE — points to the base of the EPT PD */
-  ept_pdpt->fields.accessed = 0;
-  ept_pdpt->fields.execute = 1;
-  ept_pdpt->fields.execute_for_usermode = 0;
-  ept_pdpt->fields.ignored1 = 0;
-  ept_pdpt->fields.ignored2 = 0;
-  ept_pdpt->fields.ignored3 = 0;
-  ept_pdpt->fields.physical_address = virtual_to_physical(ept_pd) / PAGE_SIZE;
-  ept_pdpt->fields.read = 1;
-  ept_pdpt->fields.reserved1 = 0;
-  ept_pdpt->fields.reserved2 = 0;
-  ept_pdpt->fields.write = 1;
-
-  /* Set up PML4E — points to the base of the EPT PDPT */
-  ept_pml4->fields.accessed = 0;
-  ept_pml4->fields.execute = 1;
-  ept_pml4->fields.execute_for_usermode = 0;
-  ept_pml4->fields.ignored1 = 0;
-  ept_pml4->fields.ignored2 = 0;
-  ept_pml4->fields.ignored3 = 0;
-  ept_pml4->fields.physical_address = virtual_to_physical(ept_pdpt) / PAGE_SIZE;
-  ept_pml4->fields.read = 1;
-  ept_pml4->fields.reserved1 = 0;
-  ept_pml4->fields.reserved2 = 0;
-  ept_pml4->fields.write = 1;
-
-  /*
-   * Set up the EPTP.
-   * memory_type = 6 (Write-Back): the EPT paging structures themselves
-   *   are cached in Write-Back mode.
-   * page_walk_length = 3: we have 4 levels of tables, so 4 - 1 = 3.
-   * dirty_access_enabled = 1: allow the hardware to set accessed and
-   *   dirty bits in EPT entries automatically.
-   * pml4_address: the host physical address (as a PFN) of our EPT PML4.
-   */
-  eptp->fields.dirty_access_enabled = 1;
-  eptp->fields.memory_type = 6;      /* Write-Back */
-  eptp->fields.page_walk_length = 3; /* 4 levels - 1 */
-  eptp->fields.pml4_address = virtual_to_physical(ept_pml4) / PAGE_SIZE;
-  eptp->fields.reserved1 = 0;
-  eptp->fields.reserved2 = 0;
-
-  pr_info("[*] Hyperion: EPT pointer allocated at 0x%llx\n", eptp->all);
-  return eptp->all;
 }

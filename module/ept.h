@@ -160,3 +160,104 @@ typedef union {
     uint64_t reserved2           : 52;
   } fields;
 } IA32_MTRR_DEF_TYPE_REGISTER;
+
+/* ---- EPT page table dimensions ---- */
+#define VMM_EPT_PML4E_COUNT 512
+#define VMM_EPT_PML3E_COUNT 512
+#define VMM_EPT_PML2E_COUNT 512
+#define VMM_EPT_PML1E_COUNT 512
+#define SIZE_2_MB (2 * 1024 * 1024ULL)
+
+/* Address masks for indexing into EPT tables */
+#define ADDRMASK_EPT_PML1_INDEX(var) (((var) & 0x1FF000ULL) >> 12)
+#define ADDRMASK_EPT_PML2_INDEX(var) (((var) & 0x3FE00000ULL) >> 21)
+#define ADDRMASK_EPT_PML3_INDEX(var) (((var) & 0x7FC0000000ULL) >> 30)
+#define ADDRMASK_EPT_PML4_INDEX(var) (((var) & 0xFF8000000000ULL) >> 39)
+
+/* PML2 entry when used as a 2 MB large page */
+typedef union _EPT_PML2_ENTRY {
+  uint64_t all;
+  struct {
+    uint64_t read              : 1;
+    uint64_t write             : 1;
+    uint64_t execute           : 1;
+    uint64_t reserved1         : 5;
+    uint64_t accessed          : 1;
+    uint64_t ignored1          : 1;
+    uint64_t execute_for_usermode : 1;
+    uint64_t ignored2          : 1;
+    uint64_t memory_type       : 3;
+    uint64_t ignore_pat        : 1;
+    uint64_t large_page        : 1;
+    uint64_t reserved2         : 4;
+    uint64_t page_frame_number : 26;
+    uint64_t reserved3         : 17;
+  } fields;
+} EPT_PML2_ENTRY;
+
+/* PML2 entry when used as a pointer to a PML1 table (after splitting) */
+typedef union _EPT_PML2_POINTER {
+  uint64_t all;
+  struct {
+    uint64_t read              : 1;
+    uint64_t write             : 1;
+    uint64_t execute           : 1;
+    uint64_t reserved1         : 5;
+    uint64_t accessed          : 1;
+    uint64_t ignored1          : 1;
+    uint64_t execute_for_usermode : 1;
+    uint64_t ignored2          : 1;
+    uint64_t physical_address  : 36;
+    uint64_t reserved2         : 4;
+    uint64_t ignored3          : 12;
+  } fields;
+} EPT_PML2_POINTER;
+
+/* PML1 entry — 4 KB page */
+typedef union _EPT_PML1_ENTRY {
+  uint64_t all;
+  struct {
+    uint64_t read              : 1;
+    uint64_t write             : 1;
+    uint64_t execute           : 1;
+    uint64_t reserved1         : 5;
+    uint64_t accessed          : 1;
+    uint64_t dirty             : 1;
+    uint64_t execute_for_usermode : 1;
+    uint64_t ignored1          : 1;
+    uint64_t memory_type       : 3;
+    uint64_t ignore_pat        : 1;
+    uint64_t ignored2          : 1;
+    uint64_t physical_address  : 36;
+    uint64_t reserved2         : 4;
+    uint64_t ignored3          : 11;
+    uint64_t suppress_ve       : 1;
+  } fields;
+} EPT_PML1_ENTRY;
+
+#ifdef __KERNEL__
+#include <linux/list.h>
+
+/* Dynamic split: holds the PML1 table for a split 2 MB page */
+typedef struct _VMM_EPT_DYNAMIC_SPLIT {
+  EPT_PML1_ENTRY PML1[VMM_EPT_PML1E_COUNT];
+  EPT_PML2_ENTRY *Entry;
+  struct list_head DynamicSplitList;
+} VMM_EPT_DYNAMIC_SPLIT;
+
+/* The full EPT page table structure */
+typedef struct VMM_EPT_PAGE_TABLE {
+  EPT_PML4E      PML4[VMM_EPT_PML4E_COUNT];
+  EPT_PDPTE      PML3[VMM_EPT_PML3E_COUNT];
+  EPT_PML2_ENTRY PML2[VMM_EPT_PML3E_COUNT][VMM_EPT_PML2E_COUNT];
+  struct list_head DynamicSplitList;
+} VMM_EPT_PAGE_TABLE;
+
+/* Global EPT state */
+typedef struct {
+  MTRR_RANGE_DESCRIPTOR MemoryRanges[MAX_MTRR_RANGES];
+  uint32_t NumberOfEnabledMemoryRanges;
+  VMM_EPT_PAGE_TABLE *EptPageTable;
+  EPTP EptPointer;
+} EPT_STATE;
+#endif
