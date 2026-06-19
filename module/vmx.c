@@ -27,6 +27,7 @@ static uint64_t g_Cr3TargetCount = 0;
 /* Forward declarations for static functions used before their definitions */
 static void vmwrite(uint64_t field, uint64_t value);
 static void vmread(uint64_t field, uint64_t *value);
+static void resume_to_next_instruction(void);
 static bool setup_vmcs(struct virtual_machine_state *guest_state,
                        uint64_t eptp_val);
 static void
@@ -438,10 +439,24 @@ static void fill_guest_selector_data(void *gdt_base, enum seg_reg seg_reg,
    *   bit  15    = G (granularity)
    *   bit  16    = unusable (if selector is NULL, this bit must be set)
    *
-   * The lower byte of seg.attributes = attrs_low  (type, S, DPL, P)
-   * The upper bits (12..15) come from the second attribute byte.
+   * seg.attributes encodes G/D/B/L/AVL at bits 11:8.
+   * Shift them up to bits 15:12 where the VMCS expects them.
+   * For CS: preserve the L bit (bit 13) from the descriptor — it must be 1
+   *   for a 64-bit code segment in IA-32e mode.
+   * For SS, DS, ES, FS, GS, LDTR: clear L (bit 13 must be 0).
+   * For TR: set L (bit 13) for 64-bit TSS (types 9/B).
    */
-  access_rights = seg.attributes & 0xf0ff;
+  access_rights = (seg.attributes & 0xff) |
+                  ((seg.attributes & 0x0f00) << 4);
+
+  if (seg_reg != SEG_CS && seg_reg != SEG_TR)
+    access_rights &= ~(1 << 13);
+
+  if (!(access_rights & (1 << 4))) {
+    uint8_t type = access_rights & 0xF;
+    if (type == 0x9 || type == 0xB)
+      access_rights |= (1 << 13);
+  }
 
   if (!selector)
     access_rights |= 0x10000; /* mark as unusable */
@@ -482,12 +497,8 @@ static bool setup_vmcs(struct virtual_machine_state *guest_state,
   vmwrite(VMCS_LINK_POINTER, ~0ULL);
 
   /* ============= GUEST IA32_DEBUGCTL ============= */
-  {
-    uint64_t debug_ctl;
-    rdmsrl(0x1D9 /* MSR_IA32_DEBUGCTL */, debug_ctl);
-    vmwrite(GUEST_IA32_DEBUGCTL, debug_ctl & 0xFFFFFFFF);
-    vmwrite(GUEST_IA32_DEBUGCTL_HIGH, debug_ctl >> 32);
-  }
+  vmwrite(GUEST_IA32_DEBUGCTL, 0);
+  vmwrite(GUEST_IA32_DEBUGCTL_HIGH, 0);
 
   /* ============= ZERO-FILL FIELDS ============= */
   vmwrite(TSC_OFFSET, 0);
@@ -564,19 +575,36 @@ static bool setup_vmcs(struct virtual_machine_state *guest_state,
   /* ============= CONTROL REGISTERS AND DR7 ============= */
   {
     unsigned long cr0, cr3, cr4, dr7;
+    uint64_t cr0_fixed0, cr0_fixed1, cr4_fixed0, cr4_fixed1;
+
     __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
     __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
     __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
     __asm__ volatile("mov %%dr7, %0" : "=r"(dr7));
 
+    /* Mask CR0/CR4 to the VMX-allowed range so the guest state
+     * passes the VM-entry consistency checks even in nested VMX. */
+    rdmsrl(MSR_IA32_VMX_CR0_FIXED0, cr0_fixed0);
+    rdmsrl(MSR_IA32_VMX_CR0_FIXED1, cr0_fixed1);
+    rdmsrl(MSR_IA32_VMX_CR4_FIXED0, cr4_fixed0);
+    rdmsrl(MSR_IA32_VMX_CR4_FIXED1, cr4_fixed1);
+
+    cr0 = (cr0 & cr0_fixed1) | cr0_fixed0;
+    cr4 = (cr4 & cr4_fixed1) | cr4_fixed0;
+
     vmwrite(GUEST_CR0, cr0);
     vmwrite(GUEST_CR3, cr3);
     vmwrite(GUEST_CR4, cr4);
-    vmwrite(GUEST_DR7, dr7);
+    vmwrite(GUEST_DR7, 0x400);
 
     vmwrite(HOST_CR0, cr0);
     vmwrite(HOST_CR3, cr3);
     vmwrite(HOST_CR4, cr4);
+
+    vmwrite(CR0_GUEST_HOST_MASK, 0);
+    vmwrite(CR4_GUEST_HOST_MASK, 0);
+    vmwrite(CR0_READ_SHADOW, cr0);
+    vmwrite(CR4_READ_SHADOW, cr4);
   }
 
   /* ============= GDT & IDT ============= */
@@ -601,6 +629,14 @@ static bool setup_vmcs(struct virtual_machine_state *guest_state,
     vmwrite(HOST_IA32_SYSENTER_CS, sysenter_cs);
     vmwrite(HOST_IA32_SYSENTER_EIP, sysenter_eip);
     vmwrite(HOST_IA32_SYSENTER_ESP, sysenter_esp);
+  }
+
+  /* ============= IA32_PAT ============= */
+  {
+    uint64_t pat;
+    rdmsrl(MSR_IA32_CR_PAT, pat);
+    vmwrite(GUEST_IA32_PAT, pat);
+    vmwrite(HOST_IA32_PAT, pat);
   }
 
   /* ============= IA32_EFER ============= */
@@ -848,6 +884,40 @@ uint8_t main_vmexit_handler(uint64_t *guest_regs) {
     break;
   }
 
+  case EXIT_REASON_INVALID_GUEST_STATE: {
+    uint64_t exit_qual = 0;
+    uint64_t instr_error = 0;
+    vmread(VM_INSTRUCTION_ERROR, &instr_error);
+    vmread(EXIT_QUALIFICATION, &exit_qual);
+    printk(KERN_ERR "[*] Hyperion: VM-entry failed (invalid guest state): "
+                     "qual=0x%llx err=0x%llx\n",
+           exit_qual, instr_error);
+    break;
+  }
+
+  case EXIT_REASON_EXTERNAL_INTERRUPT: {
+    uint64_t intr_info = 0;
+    vmread(VM_EXIT_INTR_INFO, &intr_info);
+    if (intr_info & (1ULL << 31))
+      vmwrite(VM_ENTRY_INTR_INFO_FIELD, intr_info);
+    break;
+  }
+
+  case EXIT_REASON_EXCEPTION_NMI: {
+    uint64_t intr_info = 0;
+    uint64_t error_code = 0;
+    vmread(VM_EXIT_INTR_INFO, &intr_info);
+    vmread(VM_EXIT_INTR_ERROR_CODE, &error_code);
+    vmwrite(VM_ENTRY_INTR_INFO_FIELD, intr_info);
+    vmwrite(VM_ENTRY_EXCEPTION_ERROR_CODE, error_code);
+    break;
+  }
+
+  case EXIT_REASON_RDTSC:
+  case EXIT_REASON_RDTSCP:
+    resume_to_next_instruction();
+    break;
+
   case EXIT_REASON_HLT:
     printk(KERN_INFO "[*] Hyperion: HLT detected in guest — "
                      "stopping hypervisor\n");
@@ -863,18 +933,22 @@ uint8_t main_vmexit_handler(uint64_t *guest_regs) {
       vmread(VM_EXIT_INSTRUCTION_LEN, &ExitInstructionLength);
       g_GuestRIP += ExitInstructionLength;
       should_terminate = 1;
+    } else {
+      resume_to_next_instruction();
     }
     break;
   }
 
   case EXIT_REASON_CR_ACCESS:
     HandleControlRegisterAccess(GuestRegs);
+    resume_to_next_instruction();
     break;
 
   case EXIT_REASON_MSR_READ: {
     uint32_t ECX = GuestRegs->rcx & 0xFFFFFFFF;
     printk(KERN_INFO "[*] Hyperion: RDMSR (bitmap) : 0x%x\n", ECX);
     HandleMSRRead(GuestRegs);
+    resume_to_next_instruction();
     break;
   }
 
@@ -882,17 +956,20 @@ uint8_t main_vmexit_handler(uint64_t *guest_regs) {
     uint32_t ECX = GuestRegs->rcx & 0xFFFFFFFF;
     printk(KERN_INFO "[*] Hyperion: WRMSR (bitmap) : 0x%x\n", ECX);
     HandleMSRWrite(GuestRegs);
+    resume_to_next_instruction();
     break;
   }
 
   default:
+    printk(KERN_WARNING "[*] Hyperion: unhandled VM_EXIT_REASON 0x%llx on CPU %d\n",
+           exit_reason, smp_processor_id());
     break;
   }
 
   return should_terminate;
 }
 
-static __maybe_unused void resume_to_next_instruction(void) {
+static void resume_to_next_instruction(void) {
   uint64_t current_rip = 0;
   uint64_t exit_instruction_length = 0;
 
@@ -947,6 +1024,20 @@ void VirtualizeCurrentSystem(int ProcessorID, uint64_t EPTP, void *GuestStack) {
     return;
   }
 
+  {
+    uint64_t msr_pin, msr_proc, msr_proc2, msr_entry, msr_exit;
+    rdmsrl(MSR_IA32_VMX_PINBASED_CTLS, msr_pin);
+    rdmsrl(MSR_IA32_VMX_PROCBASED_CTLS, msr_proc);
+    rdmsrl(MSR_IA32_VMX_PROCBASED_CTLS2, msr_proc2);
+    rdmsrl(MSR_IA32_VMX_ENTRY_CTLS, msr_entry);
+    rdmsrl(MSR_IA32_VMX_EXIT_CTLS, msr_exit);
+    printk(KERN_INFO "[*] Hyperion: MSR_CTLS CPU%d — "
+                     "PIN=0x%llx PROC=0x%llx PROC2=0x%llx "
+                     "ENTRY=0x%llx EXIT=0x%llx\n",
+           ProcessorID, msr_pin, msr_proc, msr_proc2,
+           msr_entry, msr_exit);
+  }
+
   printk(KERN_INFO
          "[*] Hyperion: Setting up VMCS for current system (CPU%d).\n",
          ProcessorID);
@@ -957,6 +1048,97 @@ void VirtualizeCurrentSystem(int ProcessorID, uint64_t EPTP, void *GuestStack) {
    * Example: detect reads and writes to MSR 0xC0000082 (LSTAR).
    * SetMSRBitmap(0xc0000082, ProcessorID, TRUE, TRUE);
    */
+
+  {
+    uint64_t efer, cr0, cr4, entry_ctl, exit_ctl, pin_ctl, cpu_ctl, cpu2_ctl;
+    uint64_t cs_sel, cs_base, cs_limit, cs_ar;
+    uint64_t ss_sel, ss_base, ss_limit, ss_ar;
+    uint64_t tr_sel, tr_base, tr_limit, tr_ar;
+    uint64_t ldtr_sel, ldtr_base, ldtr_limit, ldtr_ar;
+    uint64_t ds_sel, ds_ar, es_sel, es_ar, fs_sel, fs_ar, gs_sel, gs_ar;
+    uint64_t host_cr0, host_cr4, host_rip, host_rsp, host_efer, host_cs;
+    uint64_t g_pat, g_rflags, g_dr7, vmcs_link;
+    uint64_t cr4_fixed0, cr4_fixed1, cr0_fixed0, cr0_fixed1;
+    vmread(GUEST_IA32_EFER, &efer);
+    vmread(GUEST_CR0, &cr0);
+    vmread(GUEST_CR4, &cr4);
+    vmread(VM_ENTRY_CONTROLS, &entry_ctl);
+    vmread(VM_EXIT_CONTROLS, &exit_ctl);
+    vmread(PIN_BASED_VM_EXEC_CONTROL, &pin_ctl);
+    vmread(CPU_BASED_VM_EXEC_CONTROL, &cpu_ctl);
+    vmread(SECONDARY_VM_EXEC_CONTROL, &cpu2_ctl);
+    vmread(GUEST_CS_SELECTOR, &cs_sel);
+    vmread(GUEST_CS_BASE, &cs_base);
+    vmread(GUEST_CS_LIMIT, &cs_limit);
+    vmread(GUEST_CS_AR_BYTES, &cs_ar);
+    vmread(GUEST_SS_SELECTOR, &ss_sel);
+    vmread(GUEST_SS_BASE, &ss_base);
+    vmread(GUEST_SS_LIMIT, &ss_limit);
+    vmread(GUEST_SS_AR_BYTES, &ss_ar);
+    vmread(GUEST_TR_SELECTOR, &tr_sel);
+    vmread(GUEST_TR_BASE, &tr_base);
+    vmread(GUEST_TR_LIMIT, &tr_limit);
+    vmread(GUEST_TR_AR_BYTES, &tr_ar);
+    vmread(GUEST_LDTR_SELECTOR, &ldtr_sel);
+    vmread(GUEST_LDTR_BASE, &ldtr_base);
+    vmread(GUEST_LDTR_LIMIT, &ldtr_limit);
+    vmread(GUEST_LDTR_AR_BYTES, &ldtr_ar);
+    vmread(GUEST_DS_SELECTOR, &ds_sel);
+    vmread(GUEST_DS_AR_BYTES, &ds_ar);
+    vmread(GUEST_ES_SELECTOR, &es_sel);
+    vmread(GUEST_ES_AR_BYTES, &es_ar);
+    vmread(GUEST_FS_SELECTOR, &fs_sel);
+    vmread(GUEST_FS_AR_BYTES, &fs_ar);
+    vmread(GUEST_GS_SELECTOR, &gs_sel);
+    vmread(GUEST_GS_AR_BYTES, &gs_ar);
+    vmread(HOST_CR0, &host_cr0);
+    vmread(HOST_CR4, &host_cr4);
+    vmread(HOST_RIP, &host_rip);
+    vmread(HOST_RSP, &host_rsp);
+    vmread(HOST_IA32_EFER, &host_efer);
+    vmread(HOST_CS_SELECTOR, &host_cs);
+    vmread(GUEST_IA32_PAT, &g_pat);
+    vmread(GUEST_RFLAGS, &g_rflags);
+    vmread(GUEST_DR7, &g_dr7);
+    vmread(VMCS_LINK_POINTER, &vmcs_link);
+    rdmsrl(MSR_IA32_VMX_CR0_FIXED0, cr0_fixed0);
+    rdmsrl(MSR_IA32_VMX_CR0_FIXED1, cr0_fixed1);
+    rdmsrl(MSR_IA32_VMX_CR4_FIXED0, cr4_fixed0);
+    rdmsrl(MSR_IA32_VMX_CR4_FIXED1, cr4_fixed1);
+    printk(KERN_INFO "[*] Hyperion: VMCS diag CPU%d — "
+                     "G_EFER=0x%llx G_CR0=0x%llx G_CR4=0x%llx "
+                     "G_PAT=0x%llx G_RFLAGS=0x%llx G_DR7=0x%llx\n",
+           ProcessorID, efer, cr0, cr4, g_pat, g_rflags, g_dr7);
+    printk(KERN_INFO "[*] Hyperion: VMCS diag CPU%d — "
+                     "G_CS(sel=%llx ar=%llx) G_SS(sel=%llx ar=%llx)\n",
+           ProcessorID, cs_sel, cs_ar, ss_sel, ss_ar);
+    printk(KERN_INFO "[*] Hyperion: VMCS diag CPU%d — "
+                     "G_TR(sel=%llx base=%llx lim=%llx ar=%llx)\n",
+           ProcessorID, tr_sel, tr_base, tr_limit, tr_ar);
+    printk(KERN_INFO "[*] Hyperion: VMCS diag CPU%d — "
+                     "G_LDTR(sel=%llx ar=%llx) G_DS(sel=%llx ar=%llx) "
+                     "G_ES(sel=%llx ar=%llx)\n",
+           ProcessorID, ldtr_sel, ldtr_ar, ds_sel, ds_ar, es_sel, es_ar);
+    printk(KERN_INFO "[*] Hyperion: VMCS diag CPU%d — "
+                     "G_FS(sel=%llx ar=%llx) G_GS(sel=%llx ar=%llx) "
+                     "VMCS_LINK=0x%llx\n",
+           ProcessorID, fs_sel, fs_ar, gs_sel, gs_ar, vmcs_link);
+    printk(KERN_INFO "[*] Hyperion: VMCS diag CPU%d — "
+                     "H_CR0=0x%llx H_CR4=0x%llx H_EFER=0x%llx "
+                     "H_RIP=0x%llx H_CS=%llx\n",
+           ProcessorID, host_cr0, host_cr4, host_efer,
+           host_rip, host_cs);
+    printk(KERN_INFO "[*] Hyperion: VMCS diag CPU%d — "
+                     "VENTRY=0x%llx VEXIT=0x%llx PIN=0x%llx "
+                     "CPU=0x%llx CPU2=0x%llx\n",
+           ProcessorID, entry_ctl, exit_ctl, pin_ctl,
+           cpu_ctl, cpu2_ctl);
+    printk(KERN_INFO "[*] Hyperion: VMCS diag CPU%d — "
+                     "CR0_FIXED0=0x%llx CR0_FIXED1=0x%llx "
+                     "CR4_FIXED0=0x%llx CR4_FIXED1=0x%llx\n",
+           ProcessorID, cr0_fixed0, cr0_fixed1,
+           cr4_fixed0, cr4_fixed1);
+  }
 
   printk(KERN_INFO "[*] Hyperion: Executing VMLAUNCH on CPU%d.\n", ProcessorID);
 
