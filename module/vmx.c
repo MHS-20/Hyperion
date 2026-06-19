@@ -551,16 +551,24 @@ static bool setup_vmcs(struct virtual_machine_state *guest_state,
   /*
    * Secondary Processor-Based VM-Execution Controls:
    *   CPU_BASED_CTL2_RDTSCP              — enable RDTSCP instruction
-   *   CPU_BASED_CTL2_ENABLE_EPT          — enable Extended Page Tables
+   *   CPU_BASED_CTL2_ENABLE_EPT          — enable Extended Page Tables (if available)
    *   CPU_BASED_CTL2_ENABLE_INVPCID      — enable INVPCID instruction
    *   CPU_BASED_CTL2_ENABLE_XSAVE_XRSTORS — enable XSAVE/XRSTORS
    */
-  vmwrite(SECONDARY_VM_EXEC_CONTROL,
-          adjust_controls(CPU_BASED_CTL2_RDTSCP |
-                              CPU_BASED_CTL2_ENABLE_EPT |
-                              CPU_BASED_CTL2_ENABLE_INVPCID |
-                              CPU_BASED_CTL2_ENABLE_XSAVE_XRSTORS,
-                          MSR_IA32_VMX_PROCBASED_CTLS2));
+  if (g_ept_state && g_ept_state->EptPointer.all) {
+    vmwrite(SECONDARY_VM_EXEC_CONTROL,
+            adjust_controls(CPU_BASED_CTL2_RDTSCP |
+                                CPU_BASED_CTL2_ENABLE_EPT |
+                                CPU_BASED_CTL2_ENABLE_INVPCID |
+                                CPU_BASED_CTL2_ENABLE_XSAVE_XRSTORS,
+                            MSR_IA32_VMX_PROCBASED_CTLS2));
+  } else {
+    vmwrite(SECONDARY_VM_EXEC_CONTROL,
+            adjust_controls(CPU_BASED_CTL2_RDTSCP |
+                                CPU_BASED_CTL2_ENABLE_INVPCID |
+                                CPU_BASED_CTL2_ENABLE_XSAVE_XRSTORS,
+                            MSR_IA32_VMX_PROCBASED_CTLS2));
+  }
 
   // Pin-based controls
   vmwrite(PIN_BASED_VM_EXEC_CONTROL,

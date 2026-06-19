@@ -4,6 +4,11 @@
 #include <linux/mm.h>
 #include <linux/slab.h>
 #include <linux/smp.h>
+#include <linux/moduleparam.h>
+
+static bool g_enable_ept;
+module_param_named(enable_ept, g_enable_ept, bool, 0644);
+MODULE_PARM_DESC(enable_ept, "Enable Extended Page Tables (default: false)");
 
 #ifndef MSR_IA32_MTRR_CAPABILITIES
 #define MSR_IA32_MTRR_CAPABILITIES 0xFE
@@ -158,6 +163,8 @@ bool EptLogicalProcessorInitialize(void) {
 }
 
 uint64_t initialize_eptp(void) {
+  if (!g_enable_ept)
+    return 0;
   if (!EptLogicalProcessorInitialize())
     return 0;
   return g_ept_state->EptPointer.all;
