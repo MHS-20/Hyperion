@@ -164,19 +164,19 @@ VmxoffHandler:
     sub     $0x20, %rsp           /* shadow space */
 
     call    HvReturnStackPointerForVmxoff
-    mov     %rax, 0x88(%rsp)      /* save guest RSP */
+    mov     %rax, 0x78(%rsp)      /* save guest RSP */
 
     call    HvReturnInstructionPointerForVmxoff
     mov     %rax, %rdx            /* save guest RIP in RDX */
 
-    mov     0x88(%rsp), %rbx      /* load saved RSP */
+    mov     0x78(%rsp), %rbx      /* load saved RSP */
     mov     %rsp, %rcx            /* save current RSP */
     mov     %rbx, %rsp            /* switch to guest stack */
     push    %rdx                  /* push return address */
     mov     %rcx, %rsp            /* restore VMM stack */
 
     sub     $0x08, %rbx           /* account for the push */
-    mov     %rbx, 0x88(%rsp)       /* save updated guest RSP */
+    mov     %rbx, 0x78(%rsp)       /* save updated guest RSP */
 
     add     $0x20, %rsp           /* remove shadow space */
 
