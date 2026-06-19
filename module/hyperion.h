@@ -106,6 +106,7 @@ bool clear_vmcs_state(struct virtual_machine_state *guest_state);
 uint64_t initialize_eptp(void);
 bool EptLogicalProcessorInitialize(void);
 bool EptPageHook(void *TargetFunc, bool HasLaunched);
+#ifdef __KERNEL__
 EPT_PML2_ENTRY *EptGetPml2Entry(VMM_EPT_PAGE_TABLE *EptPageTable,
                                  uint64_t PhysicalAddress);
 EPT_PML1_ENTRY *EptGetPml1Entry(VMM_EPT_PAGE_TABLE *EptPageTable,
@@ -113,6 +114,7 @@ EPT_PML1_ENTRY *EptGetPml1Entry(VMM_EPT_PAGE_TABLE *EptPageTable,
 bool EptSplitLargePage(VMM_EPT_PAGE_TABLE *EptPageTable,
                        void *PreAllocatedBuffer,
                        uint64_t PhysicalAddress, int CoreIndex);
+#endif
 bool EptVmxRootModePageHook(void *TargetFunc, bool HasLaunched);
 bool EptHandleEptViolation(uint64_t ExitQualification, uint64_t GuestPhysicalAddr);
 uint8_t Invept(uint32_t Type, INVEPT_DESCRIPTOR *Descriptor);

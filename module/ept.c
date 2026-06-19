@@ -32,8 +32,6 @@ static void EptSetupPML2Entry(EPT_PML2_ENTRY *NewEntry,
   uint64_t AddressOfPage = PageFrameNumber * SIZE_2_MB;
   uint8_t TargetMemoryType = MEMORY_TYPE_WRITE_BACK;
 
-  NewEntry->fields.page_frame_number = PageFrameNumber;
-
   for (uint32_t i = 0; i < g_mtrr_range_count; i++) {
     if (AddressOfPage <= g_mtrr_ranges[i].PhysicalEndAddress) {
       if ((AddressOfPage + SIZE_2_MB - 1) >=
@@ -45,7 +43,13 @@ static void EptSetupPML2Entry(EPT_PML2_ENTRY *NewEntry,
     }
   }
 
-  NewEntry->fields.memory_type = TargetMemoryType;
+  /* For 2MB large pages, memory type is at bits 5:3 and ignore_pat
+   * is at bit 6, both within the reserved1 field.  Bit 7 must be 1. */
+  NewEntry->fields.page_frame_number = PageFrameNumber;
+  NewEntry->fields.memory_type = 0;  /* not used for large pages */
+  NewEntry->fields.ignore_pat = 0;   /* not used for large pages */
+  NewEntry->fields.reserved1 =
+      (1 << 4) | TargetMemoryType; /* bit 7=1, bits 5:3=memory_type */
 }
 
 static VMM_EPT_PAGE_TABLE *EptAllocateAndCreateIdentityPageTable(void) {
@@ -89,7 +93,8 @@ static VMM_EPT_PAGE_TABLE *EptAllocateAndCreateIdentityPageTable(void) {
   pml2_template.fields.read = 1;
   pml2_template.fields.write = 1;
   pml2_template.fields.execute = 1;
-  pml2_template.fields.large_page = 1;
+  pml2_template.fields.large_page = 0; /* for 2MB pages, bit 7=1 (via reserved1) */
+  pml2_template.fields.reserved1 = 0x10; /* bit 7=1, memory_type bits 5:3=0 (UC) */
 
   for (int group = 0; group < VMM_EPT_PML3E_COUNT; group++) {
     for (int idx = 0; idx < VMM_EPT_PML2E_COUNT; idx++) {
@@ -186,7 +191,7 @@ EPT_PML1_ENTRY *EptGetPml1Entry(VMM_EPT_PAGE_TABLE *EptPageTable,
 
   PML2 = &EptPageTable->PML2[DirectoryPointer][Directory];
 
-  if (PML2->fields.large_page)
+  if (PML2->all & (1ULL << 7))
     return NULL;
 
   PML2Pointer = (EPT_PML2_POINTER *)PML2;
@@ -212,7 +217,7 @@ bool EptSplitLargePage(VMM_EPT_PAGE_TABLE *EptPageTable, void *PreAllocatedBuffe
     return false;
   }
 
-  if (!TargetEntry->fields.large_page)
+  if (!(TargetEntry->all & (1ULL << 7)))
     return true;
 
   g_guest_state[CoreIndex].pre_allocated_buffer = NULL;
@@ -317,6 +322,7 @@ bool EptPageHook(void *TargetFunc, bool HasLaunched) {
 bool EptHandlePageHookExit(VMX_EXIT_QUALIFICATION_EPT_VIOLATION ViolationQualification,
                            uint64_t GuestPhysicalAddr) {
   uint64_t PhysicalAddress = GuestPhysicalAddr & ~(PAGE_SIZE - 1);
+  EPT_PML2_ENTRY *PML2Entry;
   EPT_PML1_ENTRY *TargetPage;
 
   if (!PhysicalAddress) {
@@ -324,10 +330,20 @@ bool EptHandlePageHookExit(VMX_EXIT_QUALIFICATION_EPT_VIOLATION ViolationQualifi
     return false;
   }
 
+  /* Try PML1 first (split page), fall back to PML2 (large page) */
   TargetPage = EptGetPml1Entry(g_ept_state->EptPageTable, PhysicalAddress);
   if (!TargetPage) {
-    pr_err("[*] Hyperion: failed to get PML1 entry for target address\n");
-    return false;
+    PML2Entry = EptGetPml2Entry(g_ept_state->EptPageTable, PhysicalAddress);
+    if (!PML2Entry || !(PML2Entry->all & (1ULL << 7))) {
+      pr_err("[*] Hyperion: no valid EPT entry for GPA 0x%llx\n",
+             GuestPhysicalAddr);
+      return false;
+    }
+    /* 2MB large page — just log and skip */
+    printk(KERN_WARNING "[*] Hyperion: EPT violation on 2MB page at "
+                        "GPA=0x%llx (PFN=%llu)\n",
+           GuestPhysicalAddr, PML2Entry->fields.page_frame_number);
+    return true;
   }
 
   if (!ViolationQualification.fields.ept_executable &&
@@ -355,8 +371,6 @@ bool EptHandleEptViolation(uint64_t ExitQualification,
   if (EptHandlePageHookExit(qual, GuestPhysicalAddr))
     return true;
 
-  pr_err("[*] Hyperion: unexpected EPT violation at GPA=0x%llx\n",
-         GuestPhysicalAddr);
   return false;
 }
 

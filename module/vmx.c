@@ -1083,6 +1083,8 @@ uint8_t main_vmexit_handler(uint64_t *guest_regs) {
 
     if (EptHandleEptViolation(exit_qual, guest_phys))
       g_guest_state[smp_processor_id()].increment_rip = false;
+    else
+      resume_to_next_instruction();
 
     break;
   }

@@ -198,6 +198,7 @@ VmxoffHandler:
     pop     %r15
 
     pop     %rsp                  /* restore guest RSP */
+    ANNOTATE_RETPOLINE_SAFE
     ret                           /* jump back to where VMCALL was called */
 
 
@@ -211,4 +212,5 @@ VmxoffHandler:
 .globl AsmVmxVmcall
 AsmVmxVmcall:
     vmcall
+    ANNOTATE_RETPOLINE_SAFE
     ret
