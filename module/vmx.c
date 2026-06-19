@@ -941,12 +941,12 @@ static bool HandleCPUID(PGUEST_REGS state) {
                    : "memory");
 
   if (state->rax == 1)
-    CpuInfo[2] |= (1 << 31);
+    CpuInfo[2] &= ~(1 << 31);  /* clear hypervisor-present bit */
   else if (state->rax == 0x40000000) {
-    CpuInfo[1] = 0x6e6f6972;
-    CpuInfo[2] = 0x76486e6f;
-    CpuInfo[3] = 0x00000000;
-    CpuInfo[0] = 0x72657079;
+    CpuInfo[1] = 0;
+    CpuInfo[2] = 0;
+    CpuInfo[3] = 0;
+    CpuInfo[0] = 0;             /* max hypervisor leaf = 0 (none) */
   }
 
   state->rax = CpuInfo[0];
