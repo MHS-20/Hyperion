@@ -164,8 +164,11 @@ bool initialize_vmx(void) {
   /* Phase 1: setup VMXON/VMCS/VMM stack/MSR bitmap/EPTP on all CPUs */
   on_each_cpu(vmx_init_on_cpu, NULL, 1);
 
-  /* Phase 2: launch VMX non-root mode on all CPUs simultaneously */
-  on_each_cpu(vmx_launch_on_cpu, NULL, 1);
+  /* Phase 2: launch VMX non-root mode.  Launch on remote CPUs first
+   * (while current CPU is still in root mode), then on current CPU.
+   * This avoids sending IPIs from a CPU already in non-root mode. */
+  smp_call_function(vmx_launch_on_cpu, NULL, 0);
+  vmx_launch_on_cpu(NULL);
 
   return true;
 }
