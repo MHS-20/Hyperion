@@ -129,6 +129,7 @@ bool EptHandleEptViolation(uint64_t ExitQualification, uint64_t GuestPhysicalAdd
 uint8_t Invept(uint32_t Type, INVEPT_DESCRIPTOR *Descriptor);
 uint8_t InveptAllContexts(void);
 uint8_t InveptSingleContext(uint64_t EptPointer);
+uint8_t InvvpidSingleContext(uint16_t VPID);
 void HvNotifyAllToInvalidateEpt(void);
 
 uint64_t vmptrst_instruction(void);
@@ -136,6 +137,7 @@ uint8_t main_vmexit_handler(uint64_t *guest_regs);
 void vm_resume_instruction(void);
 
 enum vmcs_fields {
+  VIRTUAL_PROCESSOR_ID = 0x00000000,
   GUEST_ES_SELECTOR = 0x00000800,
   GUEST_CS_SELECTOR = 0x00000802,
   GUEST_SS_SELECTOR = 0x00000804,

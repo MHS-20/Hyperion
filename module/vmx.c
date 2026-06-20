@@ -470,16 +470,36 @@ static void fill_guest_selector_data(void *gdt_base, enum seg_reg seg_reg,
   vmwrite(GUEST_ES_BASE + seg_reg * 2, seg.base);
 }
 
-// Sanitizing VMX Control Values
-static uint32_t adjust_controls(uint32_t ctl, uint32_t msr) {
-  uint64_t msr_value;
+static uint32_t HvAdjustControls(uint32_t Ctl, uint32_t Msr) {
+  uint64_t VmxBasic;
+  uint64_t MsrValue;
 
-  rdmsrl(msr, msr_value);
+  rdmsrl(MSR_IA32_VMX_BASIC, VmxBasic);
 
-  ctl &= (uint32_t)(msr_value >> 32);        /* high word: must be zero */
-  ctl |= (uint32_t)(msr_value & 0xFFFFFFFF); /* low word: must be one */
+  if (VmxBasic & (1ULL << 55)) {
+    switch (Msr) {
+    case MSR_IA32_VMX_PINBASED_CTLS:
+      Msr = MSR_IA32_VMX_TRUE_PINBASED_CTLS;
+      break;
+    case MSR_IA32_VMX_PROCBASED_CTLS:
+      Msr = MSR_IA32_VMX_TRUE_PROCBASED_CTLS;
+      break;
+    case MSR_IA32_VMX_EXIT_CTLS:
+      Msr = MSR_IA32_VMX_TRUE_EXIT_CTLS;
+      break;
+    case MSR_IA32_VMX_ENTRY_CTLS:
+      Msr = MSR_IA32_VMX_TRUE_ENTRY_CTLS;
+      break;
+    default:
+      break;
+    }
+  }
 
-  return ctl;
+  rdmsrl(Msr, MsrValue);
+  Ctl &= (uint32_t)(MsrValue >> 32);
+  Ctl |= (uint32_t)(MsrValue & 0xFFFFFFFF);
+
+  return Ctl;
 }
 
 static bool setup_vmcs(struct virtual_machine_state *guest_state,
@@ -548,43 +568,39 @@ static bool setup_vmcs(struct virtual_machine_state *guest_state,
    *   CPU_BASED_ACTIVATE_SECONDARY_CONTROLS — enable secondary controls
    */
   vmwrite(CPU_BASED_VM_EXEC_CONTROL,
-          adjust_controls(CPU_BASED_ACTIVATE_MSR_BITMAP |
-                              CPU_BASED_ACTIVATE_SECONDARY_CONTROLS,
-                          MSR_IA32_VMX_PROCBASED_CTLS));
+          HvAdjustControls(CPU_BASED_ACTIVATE_MSR_BITMAP |
+                               CPU_BASED_ACTIVATE_SECONDARY_CONTROLS,
+                           MSR_IA32_VMX_PROCBASED_CTLS));
 
   /*
    * Secondary Processor-Based VM-Execution Controls:
    *   CPU_BASED_CTL2_RDTSCP              — enable RDTSCP instruction
-   *   CPU_BASED_CTL2_ENABLE_EPT          — enable Extended Page Tables (if available)
+   *   CPU_BASED_CTL2_ENABLE_EPT          — enable Extended Page Tables
    *   CPU_BASED_CTL2_ENABLE_INVPCID      — enable INVPCID instruction
+   *   CPU_BASED_CTL2_ENABLE_VPID         — enable VPID-based TLB
    *   CPU_BASED_CTL2_ENABLE_XSAVE_XRSTORS — enable XSAVE/XRSTORS
    */
-  if (g_ept_state && g_ept_state->EptPointer.all) {
-    vmwrite(SECONDARY_VM_EXEC_CONTROL,
-            adjust_controls(CPU_BASED_CTL2_RDTSCP |
-                                CPU_BASED_CTL2_ENABLE_EPT |
-                                CPU_BASED_CTL2_ENABLE_INVPCID |
-                                CPU_BASED_CTL2_ENABLE_XSAVE_XRSTORS,
-                            MSR_IA32_VMX_PROCBASED_CTLS2));
-  } else {
-    vmwrite(SECONDARY_VM_EXEC_CONTROL,
-            adjust_controls(CPU_BASED_CTL2_RDTSCP |
-                                CPU_BASED_CTL2_ENABLE_INVPCID |
-                                CPU_BASED_CTL2_ENABLE_XSAVE_XRSTORS,
-                            MSR_IA32_VMX_PROCBASED_CTLS2));
-  }
+  vmwrite(SECONDARY_VM_EXEC_CONTROL,
+          HvAdjustControls(CPU_BASED_CTL2_RDTSCP |
+                               CPU_BASED_CTL2_ENABLE_EPT |
+                               CPU_BASED_CTL2_ENABLE_INVPCID |
+                               CPU_BASED_CTL2_ENABLE_VPID |
+                               CPU_BASED_CTL2_ENABLE_XSAVE_XRSTORS,
+                           MSR_IA32_VMX_PROCBASED_CTLS2));
+
+  vmwrite(VIRTUAL_PROCESSOR_ID, 1);
 
   // Pin-based controls
   vmwrite(PIN_BASED_VM_EXEC_CONTROL,
-          adjust_controls(0, MSR_IA32_VMX_PINBASED_CTLS));
+          HvAdjustControls(0, MSR_IA32_VMX_PINBASED_CTLS));
 
   // VM-exit controls: 64-bit (IA-32e) mode
   vmwrite(VM_EXIT_CONTROLS,
-          adjust_controls(VM_EXIT_IA32E_MODE, MSR_IA32_VMX_EXIT_CTLS));
+          HvAdjustControls(VM_EXIT_IA32E_MODE, MSR_IA32_VMX_EXIT_CTLS));
 
   // VM-entry controls: 64-bit (IA-32e) mode
   vmwrite(VM_ENTRY_CONTROLS,
-          adjust_controls(VM_ENTRY_IA32E_MODE, MSR_IA32_VMX_ENTRY_CTLS));
+          HvAdjustControls(VM_ENTRY_IA32E_MODE, MSR_IA32_VMX_ENTRY_CTLS));
 
   /* ============= CONTROL REGISTERS AND DR7 ============= */
   {
@@ -868,6 +884,7 @@ static void HandleControlRegisterAccess(PGUEST_REGS GuestState) {
       break;
     case 3:
       vmwrite(GUEST_CR3, (*RegPtr & ~(1ULL << 63)));
+      InvvpidSingleContext(1);
       break;
     case 4:
       vmwrite(GUEST_CR4, *RegPtr);

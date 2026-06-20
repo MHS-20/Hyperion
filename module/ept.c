@@ -669,6 +669,47 @@ void HvNotifyAllToInvalidateEpt(void) {
               (void *)(uintptr_t)g_ept_state->EptPointer.all, 1);
 }
 
+static uint8_t AsmInvvpid(INVVPID_TYPE Type, INVVPID_DESCRIPTOR *Descriptor) {
+  struct {
+    uint64_t vpid;
+    uint64_t linear_address;
+  } operand = {0};
+  uint8_t result = 0;
+
+  if (Descriptor) {
+    operand.vpid = Descriptor->VPID;
+    operand.linear_address = Descriptor->LinearAddress;
+  }
+
+  asm volatile(".intel_syntax noprefix\n\t"
+               "invvpid %[type], oword ptr [%[desc]]\n\t"
+               "setna %[result]\n\t"
+               ".att_syntax prefix\n\t"
+               : [result] "=q"(result)
+               : [type] "r"((uint64_t)Type),
+                 [desc] "r"(&operand)
+               : "cc", "memory");
+
+  return result;
+}
+
+uint8_t InvvpidSingleContext(uint16_t VPID) {
+  INVVPID_DESCRIPTOR Descriptor = {0};
+  Descriptor.VPID = VPID;
+  return AsmInvvpid(INVVPID_SINGLE_CONTEXT, &Descriptor);
+}
+
+uint8_t InvvpidAllContexts(void) {
+  return AsmInvvpid(INVVPID_ALL_CONTEXT, NULL);
+}
+
+uint8_t InvvpidIndividualAddress(uint16_t VPID, uint64_t LinearAddress) {
+  INVVPID_DESCRIPTOR Descriptor = {0};
+  Descriptor.VPID = VPID;
+  Descriptor.LinearAddress = LinearAddress;
+  return AsmInvvpid(INVVPID_INDIVIDUAL_ADDRESS, &Descriptor);
+}
+
 static bool EptBuildMtrrMap(void) {
   IA32_MTRR_CAPABILITIES_REGISTER MTRRCap;
   IA32_MTRR_PHYSBASE_REGISTER CurrentPhysBase;

@@ -246,6 +246,20 @@ typedef enum {
   INVEPT_ALL_CONTEXTS   = 2
 } INVEPT_TYPE;
 
+typedef enum _INVVPID_TYPE {
+  INVVPID_INDIVIDUAL_ADDRESS            = 0,
+  INVVPID_SINGLE_CONTEXT                = 1,
+  INVVPID_ALL_CONTEXT                   = 2,
+  INVVPID_SINGLE_CONTEXT_RETAIN_GLOBALS = 3,
+} INVVPID_TYPE;
+
+typedef struct _INVVPID_DESCRIPTOR {
+  uint16_t VPID;
+  uint16_t Reserved1;
+  uint32_t Reserved2;
+  uint64_t LinearAddress;
+} INVVPID_DESCRIPTOR;
+
 #ifdef __KERNEL__
 #include <linux/list.h>
 
