@@ -8,6 +8,7 @@
 #include <linux/smp.h>
 #include <linux/list.h>
 #include <linux/uaccess.h>
+#include <linux/kallsyms.h>
 
 #define VMM_STACK_SIZE (PAGE_SIZE * 2)
 
@@ -1189,6 +1190,76 @@ static void LogInfo(const char *Format, ...) {
 
   if (Length > 0 && Length < LOG_BUFFER_PACKET_SIZE)
     LogSendBuffer(OPERATION_LOG_INFO, Buffer, Length + 1);
+}
+
+typedef long (*openat_t)(int dfd, const char __user *filename,
+                          int flags, umode_t mode);
+
+static openat_t OriginalOpenat = NULL;
+
+static long SyscallOpenatHook(int dfd, const char __user *filename,
+                               int flags, umode_t mode) {
+  char fname[256] = {0};
+
+  if (filename) {
+    if (strncpy_from_user(fname, filename, sizeof(fname) - 1) > 0)
+      printk(KERN_INFO "[*] Hyperion: openat(\"%s\", flags=0x%x)\n",
+             fname, flags);
+  }
+
+  if (OriginalOpenat)
+    return OriginalOpenat(dfd, filename, flags, mode);
+
+  return -ENOSYS;
+}
+
+static unsigned long *g_sys_call_table = NULL;
+
+static bool SyscallHookFindTable(void) {
+  g_sys_call_table = (unsigned long *)kallsyms_lookup_name("sys_call_table");
+  if (!g_sys_call_table) {
+    pr_err("[*] Hyperion: sys_call_table not found via kallsyms\n");
+    return false;
+  }
+
+  printk(KERN_INFO "[*] Hyperion: sys_call_table at 0x%px\n",
+         g_sys_call_table);
+  return true;
+}
+
+static void *SyscallHookGetFunctionAddress(unsigned int SyscallNumber) {
+  if (!g_sys_call_table) {
+    pr_err("[*] Hyperion: syscall table not found\n");
+    return NULL;
+  }
+
+  return (void *)g_sys_call_table[SyscallNumber];
+}
+
+static int DemonstrateSyscallHook(void) {
+  void *TargetFunction;
+  void *OriginalFunction = NULL;
+  int SyscallNumber = __NR_openat;
+
+  if (!SyscallHookFindTable())
+    return -1;
+
+  TargetFunction = SyscallHookGetFunctionAddress(SyscallNumber);
+  if (!TargetFunction) {
+    pr_err("[*] Hyperion: syscall %d not found\n", SyscallNumber);
+    return -1;
+  }
+
+  if (!EptPerformPageHook(TargetFunction, SyscallOpenatHook,
+                           &OriginalFunction, false, false, true)) {
+    pr_err("[*] Hyperion: failed to apply syscall hook\n");
+    return -1;
+  }
+
+  OriginalOpenat = (openat_t)OriginalFunction;
+
+  printk(KERN_INFO "[*] Hyperion: syscall hook applied on __x64_sys_openat\n");
+  return 0;
 }
 
 /*
