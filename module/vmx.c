@@ -514,6 +514,8 @@ static bool setup_vmcs(struct virtual_machine_state *guest_state,
   vmwrite(VM_ENTRY_MSR_LOAD_COUNT, 0);
   vmwrite(VM_ENTRY_INTR_INFO_FIELD, 0);
 
+  vmwrite(EXCEPTION_BITMAP, (1 << EXCEPTION_VECTOR_BREAKPOINT));
+
   /* ============= GUEST SEGMENT DATA ============= */
   gdt_base = get_gdt_base();
 
@@ -733,6 +735,43 @@ static uint8_t GetBit(void *Addr, uint64_t Bit) {
   uint64_t K = 7 - (Bit % 8);
   uint8_t *Addr2 = (uint8_t *)Addr;
   return Addr2[Byte] & (1 << K);
+}
+
+static void EventInjectInterruption(uint32_t InterruptionType,
+                                    uint32_t Vector,
+                                    bool DeliverErrorCode,
+                                    uint32_t ErrorCode) {
+  uint32_t IntrInfo = 0;
+
+  IntrInfo |= Vector;
+  IntrInfo |= (InterruptionType & 0x7) << 8;
+  IntrInfo |= (DeliverErrorCode ? 1 : 0) << 11;
+  IntrInfo |= (1 << 31);
+
+  vmwrite(VM_ENTRY_INTR_INFO_FIELD, IntrInfo);
+
+  if (DeliverErrorCode)
+    vmwrite(VM_ENTRY_EXCEPTION_ERROR_CODE, ErrorCode);
+}
+
+static void EventInjectBreakpoint(uint64_t GuestRip) {
+  uint64_t ExitInstructionLength = 0;
+
+  vmread(VM_EXIT_INSTRUCTION_LEN, &ExitInstructionLength);
+
+  EventInjectInterruption(INTERRUPT_TYPE_SOFTWARE_EXCEPTION,
+                          EXCEPTION_VECTOR_BREAKPOINT,
+                          false,
+                          0);
+
+  vmwrite(VM_ENTRY_INSTRUCTION_LEN, ExitInstructionLength);
+}
+
+static void EventInjectGeneralProtection(uint64_t ErrorCode) {
+  EventInjectInterruption(INTERRUPT_TYPE_HARDWARE_EXCEPTION,
+                          EXCEPTION_VECTOR_GENERAL_PROTECTION,
+                          true,
+                          ErrorCode);
 }
 
 static bool SetMsrBitmap(uint64_t Msr, int ProcessID,
@@ -1020,12 +1059,27 @@ uint8_t main_vmexit_handler(uint64_t *guest_regs) {
   }
 
   case EXIT_REASON_EXCEPTION_NMI: {
-    uint64_t intr_info = 0;
-    uint64_t error_code = 0;
-    vmread(VM_EXIT_INTR_INFO, &intr_info);
-    vmread(VM_EXIT_INTR_ERROR_CODE, &error_code);
-    vmwrite(VM_ENTRY_INTR_INFO_FIELD, intr_info);
-    vmwrite(VM_ENTRY_EXCEPTION_ERROR_CODE, error_code);
+    uint64_t IntrInfo = 0;
+    uint64_t IntrErrorCode = 0;
+
+    vmread(VM_EXIT_INTR_INFO, &IntrInfo);
+    uint32_t Vector = IntrInfo & 0xFF;
+    uint32_t InterruptionType = (IntrInfo >> 8) & 0x7;
+
+    if (Vector == EXCEPTION_VECTOR_BREAKPOINT &&
+        InterruptionType == INTERRUPT_TYPE_SOFTWARE_EXCEPTION) {
+      uint64_t GuestRip = 0;
+      vmread(GUEST_RIP, &GuestRip);
+      printk(KERN_INFO "[*] Hyperion: #BP at RIP=0x%llx on CPU %d\n",
+             GuestRip, smp_processor_id());
+
+      g_guest_state[smp_processor_id()].increment_rip = false;
+      EventInjectBreakpoint(GuestRip);
+    } else {
+      vmwrite(VM_ENTRY_INTR_INFO_FIELD, IntrInfo);
+      vmread(VM_EXIT_INTR_ERROR_CODE, &IntrErrorCode);
+      vmwrite(VM_ENTRY_EXCEPTION_ERROR_CODE, IntrErrorCode);
+    }
     break;
   }
 
