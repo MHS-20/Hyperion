@@ -263,6 +263,16 @@ typedef struct _INVVPID_DESCRIPTOR {
 #ifdef __KERNEL__
 #include <linux/list.h>
 
+#define POOL_MAX_BUFFERS 10
+
+typedef struct _POOL_MANAGER {
+  void *Pool[POOL_MAX_BUFFERS];
+  volatile unsigned long PoolLock;
+  int PoolIndex;
+  size_t BufferSize;
+  bool AutoReplenish;
+} POOL_MANAGER;
+
 /* Dynamic split: holds the PML1 table for a split 2 MB page */
 typedef struct _VMM_EPT_DYNAMIC_SPLIT {
   EPT_PML1_ENTRY PML1[VMM_EPT_PML1E_COUNT];

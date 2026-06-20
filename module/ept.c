@@ -710,6 +710,52 @@ uint8_t InvvpidIndividualAddress(uint16_t VPID, uint64_t LinearAddress) {
   return AsmInvvpid(INVVPID_INDIVIDUAL_ADDRESS, &Descriptor);
 }
 
+static bool EptBuildMtrrMap(void);
+
+static POOL_MANAGER g_EptSplitPool = {0};
+
+static bool PoolManagerInitialize(POOL_MANAGER *Manager,
+                                   size_t BufferSize, int Count) {
+  memset(Manager, 0, sizeof(POOL_MANAGER));
+  Manager->BufferSize = BufferSize;
+  Manager->AutoReplenish = true;
+
+  for (int i = 0; i < Count && i < POOL_MAX_BUFFERS; i++) {
+    Manager->Pool[i] = kmalloc(BufferSize, GFP_KERNEL);
+    if (!Manager->Pool[i]) {
+      pr_err("[*] Hyperion: pool allocation failed\n");
+      return false;
+    }
+    memset(Manager->Pool[i], 0, BufferSize);
+    Manager->PoolIndex = i;
+  }
+  Manager->PoolIndex++;
+
+  return true;
+}
+
+static void *PoolManagerRequestPool(POOL_MANAGER *Manager) {
+  unsigned long flags;
+
+  while (test_and_set_bit(0, &Manager->PoolLock))
+    cpu_relax();
+
+  void *Buffer = NULL;
+
+  if (Manager->PoolIndex > 0) {
+    Manager->PoolIndex--;
+    Buffer = Manager->Pool[Manager->PoolIndex];
+    Manager->Pool[Manager->PoolIndex] = NULL;
+  }
+
+  clear_bit(0, &Manager->PoolLock);
+
+  if (Manager->PoolIndex == 0 && Manager->AutoReplenish)
+    printk(KERN_WARNING "[*] Hyperion: pool depleted, replenish needed\n");
+
+  return Buffer;
+}
+
 static bool EptBuildMtrrMap(void) {
   IA32_MTRR_CAPABILITIES_REGISTER MTRRCap;
   IA32_MTRR_PHYSBASE_REGISTER CurrentPhysBase;
