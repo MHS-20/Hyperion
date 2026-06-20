@@ -580,18 +580,23 @@ static bool setup_vmcs(struct virtual_machine_state *guest_state,
   /*
    * Secondary Processor-Based VM-Execution Controls:
    *   CPU_BASED_CTL2_RDTSCP              — enable RDTSCP instruction
-   *   CPU_BASED_CTL2_ENABLE_EPT          — enable Extended Page Tables
+   *   CPU_BASED_CTL2_ENABLE_EPT          — enable Extended Page Tables (if EPTP valid)
    *   CPU_BASED_CTL2_ENABLE_INVPCID      — enable INVPCID instruction
    *   CPU_BASED_CTL2_ENABLE_VPID         — enable VPID-based TLB
    *   CPU_BASED_CTL2_ENABLE_XSAVE_XRSTORS — enable XSAVE/XRSTORS
    */
-  vmwrite(SECONDARY_VM_EXEC_CONTROL,
-          HvAdjustControls(CPU_BASED_CTL2_RDTSCP |
-                               CPU_BASED_CTL2_ENABLE_EPT |
-                               CPU_BASED_CTL2_ENABLE_INVPCID |
-                               CPU_BASED_CTL2_ENABLE_VPID |
-                               CPU_BASED_CTL2_ENABLE_XSAVE_XRSTORS,
-                           MSR_IA32_VMX_PROCBASED_CTLS2));
+  {
+    uint32_t secondary = CPU_BASED_CTL2_RDTSCP |
+                         CPU_BASED_CTL2_ENABLE_INVPCID |
+                         CPU_BASED_CTL2_ENABLE_VPID |
+                         CPU_BASED_CTL2_ENABLE_XSAVE_XRSTORS;
+
+    if (eptp_val)
+      secondary |= CPU_BASED_CTL2_ENABLE_EPT;
+
+    vmwrite(SECONDARY_VM_EXEC_CONTROL,
+            HvAdjustControls(secondary, MSR_IA32_VMX_PROCBASED_CTLS2));
+  }
 
   vmwrite(VIRTUAL_PROCESSOR_ID, 1);
 
