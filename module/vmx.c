@@ -136,6 +136,12 @@ static void vmx_init_on_cpu(void *info) {
   g_guest_state[cpu].msr_bitmap_physical =
       virtual_to_physical(g_guest_state[cpu].msr_bitmap_virt);
 
+  g_guest_state[cpu].pre_allocated_buffer =
+      kmalloc(sizeof(VMM_EPT_DYNAMIC_SPLIT), GFP_KERNEL);
+  if (g_guest_state[cpu].pre_allocated_buffer)
+    memset(g_guest_state[cpu].pre_allocated_buffer, 0,
+           sizeof(VMM_EPT_DYNAMIC_SPLIT));
+
   g_guest_state[cpu].eptp = initialize_eptp();
 }
 
@@ -943,6 +949,17 @@ int VmxVmcallHandler(uint64_t VmcallNumber, uint64_t OptionalParam1,
     InveptAllContexts();
     VmcallStatus = 0;
     break;
+  case VMCALL_HIDDEN_HOOK:
+    VmcallStatus = EptPerformPageHook((void *)OptionalParam1, NULL, NULL,
+                                       true, true, false) ? 0 : -1;
+    break;
+  case VMCALL_UNHIDE_PAGE:
+    VmcallStatus = EptPageUnHookSinglePage((void *)OptionalParam1) ? 0 : -1;
+    break;
+  case VMCALL_LOG_MESSAGE:
+    LogInfo("VMX-root: tag=0x%llx", OptionalParam1);
+    VmcallStatus = 0;
+    break;
   default:
     VmcallStatus = 0;
     break;
@@ -1085,6 +1102,10 @@ static bool HandleCPUID(PGUEST_REGS state) {
 
 static LOG_BUFFER_POOL g_LogPool;
 
+static char g_test_page[PAGE_SIZE] __attribute__((aligned(PAGE_SIZE)));
+
+void *get_test_page(void) { return g_test_page; }
+
 static bool LogInitialize(void) {
   void *Buffer;
 
@@ -1184,7 +1205,7 @@ int LogReadBuffer(void __user *UserBuffer, uint32_t UserBufferSize,
   return CopySize > 0 ? 0 : -EAGAIN;
 }
 
-static void LogInfo(const char *Format, ...) {
+void LogInfo(const char *Format, ...) {
   char Buffer[LOG_BUFFER_PACKET_SIZE];
   va_list Args;
   int Length;
@@ -1281,7 +1302,7 @@ uint8_t main_vmexit_handler(uint64_t *guest_regs) {
 
   exit_reason = exit_reason & 0xffff;
 
-  printk_ratelimited(KERN_INFO "[*] Hyperion: VM_EXIT_REASON 0x%llx on CPU %d\n",
+  printk(KERN_INFO "[*] Hyperion: VM_EXIT_REASON 0x%llx on CPU %d\n",
          exit_reason, smp_processor_id());
 
   switch (exit_reason) {
@@ -1416,6 +1437,8 @@ uint8_t main_vmexit_handler(uint64_t *guest_regs) {
     uint64_t guest_phys = 0;
     vmread(EXIT_QUALIFICATION, &exit_qual);
     vmread(GUEST_PHYSICAL_ADDRESS, &guest_phys);
+    printk(KERN_INFO "[*] Hyperion: EPT_VIOLATION at GPA=0x%llx qual=0x%llx\n",
+           guest_phys, exit_qual);
 
     if (EptHandleEptViolation(exit_qual, guest_phys))
       g_guest_state[smp_processor_id()].increment_rip = false;

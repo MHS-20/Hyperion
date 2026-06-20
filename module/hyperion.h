@@ -25,6 +25,11 @@ uint64_t virtual_to_physical(void *va);
 
 #define IOCTL_READ_LOG_BUFFER _IOR(HYPERION_MAGIC, 3, unsigned long)
 
+#define IOCTL_TEST_LOG          _IOW(HYPERION_MAGIC, 10, unsigned long)
+#define IOCTL_TEST_HOOK_RW      _IO(HYPERION_MAGIC, 11)
+#define IOCTL_TEST_HOOK_TRIGGER _IO(HYPERION_MAGIC, 12)
+#define IOCTL_TEST_HOOK_UNINSTALL _IO(HYPERION_MAGIC, 13)
+
 typedef struct {
   bool     is_vmxoff_executed;
   uint64_t guest_rip;
@@ -37,6 +42,9 @@ typedef struct {
 #define VMCALL_EXEC_HOOK_PAGE          0x3
 #define VMCALL_INVEPT_ALL_CONTEXT      0x4
 #define VMCALL_INVEPT_SINGLE_CONTEXT   0x5
+#define VMCALL_HIDDEN_HOOK             0x10
+#define VMCALL_UNHIDE_PAGE             0x11
+#define VMCALL_LOG_MESSAGE             0x12
 
 struct virtual_machine_state {
   /* Physical addresses of the VMXON and VMCS regions */
@@ -119,6 +127,8 @@ bool EptPageUnHookSinglePage(void *TargetFunction);
 #ifdef __KERNEL__
 int LogReadBuffer(void __user *UserBuffer, uint32_t UserBufferSize,
                   uint32_t *BytesWritten);
+void *get_test_page(void);
+void LogInfo(const char *Format, ...);
 #endif
 bool EptPageHook(void *TargetFunc, bool HasLaunched);
 #ifdef __KERNEL__

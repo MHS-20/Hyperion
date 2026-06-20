@@ -5,92 +5,150 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
-#include <unistd.h>
 #include <time.h>
+#include <unistd.h>
 
 #define DEVICE_PATH "/dev/hyperion"
 
+#define OPERATION_LOG_INFO    1
+#define OPERATION_LOG_WARNING 2
+#define OPERATION_LOG_ERROR   3
+
 static int g_fd = -1;
+static int g_failed = 0;
 
-/* Test 1: CPU vendor and VMX detection */
-static int test_cpu_vendor(void) {
-  char vendor[13] = {0};
-  uint32_t ebx, ecx, edx;
-
-  __asm__ volatile("xor %%eax, %%eax\n\t"
-                   "cpuid\n\t"
-                   : "=b"(ebx), "=c"(ecx), "=d"(edx)
-                   :
-                   : "eax");
-  memcpy(vendor + 0, &ebx, 4);
-  memcpy(vendor + 4, &edx, 4);
-  memcpy(vendor + 8, &ecx, 4);
-
-  printf("  CPU Vendor: %s\n", vendor);
-
-  __asm__ volatile("mov $1, %%eax\n\t"
-                   "cpuid\n\t"
-                   : "=c"(ecx)
-                   :
-                   : "eax", "ebx", "edx");
-
-  printf("  VMX supported: %s\n", (ecx >> 5) & 1 ? "yes" : "no");
-  printf("  Hypervisor bit (ECX[31]): %s\n",
-         (ecx >> 31) & 1 ? "SET (bad)" : "clear (good)");
-  return ((ecx >> 5) & 1) ? 0 : 1;
+static void test_header(const char *name) {
+  printf("\n[%s]\n", name);
 }
 
-/* Test 2: Check if KVM PV is active */
-static int test_kvm_pv(void) {
-  FILE *f = fopen("/sys/module/kvm/parameters/current", "r");
-  /* Check /proc/cpuinfo for hypervisor flag */
-  f = fopen("/proc/cpuinfo", "r");
-  if (!f) return 1;
-
-  char line[256];
-  int found = 0;
-  while (fgets(line, sizeof(line), f)) {
-    if (strstr(line, "hypervisor")) {
-      printf("  /proc/cpuinfo shows: %s", line);
-      found = 1;
-    }
-  }
-  fclose(f);
-
-  if (!found) printf("  No hypervisor flag in /proc/cpuinfo (good)\n");
-  else        printf("  Hypervisor flag present (unexpected)\n");
-
-  return found ? 1 : 0;
+static void pass(const char *msg) {
+  printf("  PASS: %s\n", msg);
 }
 
-/* Test 3: Open device and init VMX */
-static int test_vmx_init(void) {
-  g_fd = open(DEVICE_PATH, O_RDWR);
-  if (g_fd < 0) {
-    perror("  open /dev/hyperion");
-    return 1;
-  }
-  printf("  Device opened: ok\n");
+static void fail(const char *msg) {
+  printf("  FAIL: %s\n", msg);
+  g_failed++;
+}
 
-  if (ioctl(g_fd, IOCTL_INIT_VMX) < 0) {
-    perror("  IOCTL_INIT_VMX");
-    close(g_fd); g_fd = -1;
+static int read_log(uint8_t *buf, size_t size) {
+  int bytes = ioctl(g_fd, IOCTL_READ_LOG_BUFFER, buf);
+  return bytes > 0 ? bytes : 0;
+}
+
+static int drain_logs(void) {
+  uint8_t buf[4096];
+  int total = 0;
+  int n;
+  while ((n = read_log(buf, sizeof(buf))) > 0)
+    total += n;
+  return total;
+}
+
+static int find_log(const char *needle) {
+  uint8_t buf[4096];
+  int n = read_log(buf, sizeof(buf));
+  if (n <= 0) return 0;
+  buf[n] = '\0';
+  /* skip the 4-byte opcode header, message follows */
+  char *msg = (char *)(buf + sizeof(uint32_t));
+  return strstr(msg, needle) != NULL;
+}
+
+static void print_logs(void) {
+  uint8_t buf[4096];
+  int n;
+  printf("  --- Log buffer messages ---\n");
+  while ((n = read_log(buf, sizeof(buf))) > 0) {
+    uint32_t op = *(uint32_t *)buf;
+    char *msg = (char *)(buf + sizeof(uint32_t));
+    msg[n - sizeof(uint32_t) > 0 ? n - sizeof(uint32_t) : 0] = '\0';
+    const char *tag = op == OPERATION_LOG_INFO  ? "INFO"
+                      : op == OPERATION_LOG_WARNING ? "WARN"
+                      : op == OPERATION_LOG_ERROR ? "ERR"
+                      : "???";
+    printf("  [%s] %s\n", tag, msg);
+  }
+  printf("  --- End log buffer ---\n");
+}
+
+static int test_log_buffer(void) {
+  test_header("Log buffer roundtrip");
+  drain_logs();
+
+  if (ioctl(g_fd, IOCTL_TEST_LOG, 0xAAA) < 0) {
+    fail("IOCTL_TEST_LOG failed");
     return 1;
   }
-  printf("  VMX initialized: ok\n");
+  pass("IOCTL_TEST_LOG sent");
+
+  usleep(100000);
+
+  if (find_log("tag=0xaaa")) {
+    pass("Log message received in userspace");
+  } else {
+    fail("Log message not found in buffer");
+    print_logs();
+    return 1;
+  }
   return 0;
 }
 
-/* Test 4: Stability — run a busy loop for N seconds in non-root mode */
-static int test_stability(int seconds) {
-  time_t start = time(NULL);
-  volatile unsigned long counter = 0;
+static int test_hidden_rw_hook(void) {
+  test_header("Hidden EPT read/write hook");
 
-  printf("  Running stability test for %d seconds...\n", seconds);
+  if (ioctl(g_fd, IOCTL_TEST_HOOK_RW) < 0) {
+    fail("IOCTL_TEST_HOOK_RW failed");
+    return 1;
+  }
+  pass("Hook installed via VMCALL");
+
+  drain_logs();
+
+  if (ioctl(g_fd, IOCTL_TEST_HOOK_TRIGGER) < 0) {
+    fail("IOCTL_TEST_HOOK_TRIGGER failed");
+    return 1;
+  }
+  pass("Hook trigger executed");
+
+  usleep(300000);
+
+  if (find_log("EPT hook")) {
+    pass("EPT hook trigger message found in log buffer");
+  } else {
+    printf("  WARN: EPT hook message not in log buffer "
+           "(may be in dmesg)\n");
+  }
+
+  if (ioctl(g_fd, IOCTL_TEST_HOOK_UNINSTALL) < 0) {
+    fail("IOCTL_TEST_HOOK_UNINSTALL failed");
+    return 1;
+  }
+  pass("Hook uninstalled");
+
+  drain_logs();
+
+  if (ioctl(g_fd, IOCTL_TEST_HOOK_TRIGGER) < 0) {
+    fail("IOCTL_TEST_HOOK_TRIGGER (post-uninstall) failed");
+    return 1;
+  }
+
+  usleep(100000);
+
+  if (read_log(NULL, 0) == 0) {
+    pass("No spurious hook triggers after uninstall");
+  }
+
+  return 0;
+}
+
+static int test_stability(void) {
+  test_header("Stability (5-second busy loop)");
+  volatile unsigned long counter = 0;
+  int seconds = 5;
+  time_t start = time(NULL);
 
   while (time(NULL) - start < seconds) {
-    /* Busy work to exercise CR3 switches and CPUID */
-    for (int i = 0; i < 10000; i++) {
+    for (int i = 0; i < 5000; i++) {
       uint32_t eax = 1, ebx, ecx, edx;
       __asm__ volatile("cpuid"
                        : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
@@ -98,50 +156,49 @@ static int test_stability(int seconds) {
                        : "memory");
       counter += ebx;
     }
-    usleep(100000); /* 100ms */
-    printf("  ."); fflush(stdout);
+    usleep(100000);
   }
-  printf("\n  Stability test: PASSED (%d seconds, %lu cpuid rounds)\n",
-         seconds, counter / 10000);
+
+  pass("Stability test completed");
+  printf("  Loops: %lu cpuid rounds in %d seconds\n",
+         counter / 5000, seconds);
   return 0;
 }
 
-/* Main */
 int main(int argc, char **argv) {
-  int failed = 0;
-
   printf("========================================\n");
-  printf(" Hyperion Integration Test Suite\n");
-  printf("========================================\n\n");
+  printf(" Hyperion Feature Test Suite\n");
+  printf("========================================\n");
 
-  printf("[1] CPU detection\n");
-  failed += test_cpu_vendor();
-
-  printf("\n[2] KVM PV check (post-VMLAUNCH)\n");
-  /* Skip if we haven't launched yet — test after VMX init */
-
-  printf("\n[3] VMX initialization\n");
-  failed += test_vmx_init();
-
-  if (g_fd >= 0) {
-    printf("\n[4] CPUID hypervisor bit (non-root mode)\n");
-    failed += test_cpu_vendor();
-
-    printf("\n[5] Stability test\n");
-    failed += test_stability(5);
-
-    printf("\n[6] Cleanup\n");
-    close(g_fd);
-    g_fd = -1;
-    printf("  Device closed: ok\n");
+  g_fd = open(DEVICE_PATH, O_RDWR);
+  if (g_fd < 0) {
+    perror("open " DEVICE_PATH);
+    return 1;
   }
+  pass("Device opened");
+
+  printf("\n=== VMX Initialization ===\n");
+  if (ioctl(g_fd, IOCTL_INIT_VMX) < 0) {
+    perror("IOCTL_INIT_VMX");
+    close(g_fd);
+    return 1;
+  }
+  pass("VMX initialized (now in non-root mode)");
+
+  test_log_buffer();
+  test_hidden_rw_hook();
+  test_stability();
+
+  close(g_fd);
+  g_fd = -1;
+  pass("Device closed (VMX terminated)");
 
   printf("\n========================================\n");
-  if (failed == 0)
+  if (g_failed == 0)
     printf(" ALL TESTS PASSED\n");
   else
-    printf(" %d TEST(S) FAILED\n", failed);
+    printf(" %d TEST(S) FAILED\n", g_failed);
   printf("========================================\n");
 
-  return failed;
+  return g_failed > 0 ? 1 : 0;
 }

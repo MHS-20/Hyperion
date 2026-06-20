@@ -408,7 +408,12 @@ static void EptHookWriteAbsoluteJump(void *Destination, uint64_t TargetAddress) 
 static void EptSetPML1AndInvalidateTLB(EPT_PML1_ENTRY *Entry,
                                        EPT_PML1_ENTRY NewValue) {
   Entry->all = NewValue.all;
-  InveptSingleContext(g_ept_state->EptPointer.all);
+
+  uint8_t status = InveptSingleContext(g_ept_state->EptPointer.all);
+  if (status)
+    pr_err("[*] Hyperion: INVEPT failed with status %u\n", status);
+
+  InveptAllContexts();
 }
 
 static LIST_HEAD(g_HookedPagesList);
@@ -546,6 +551,11 @@ bool EptHandleHookedPage(uint64_t PhysicalAddress, uint64_t GuestRip,
              GuestRip, PhysicalAddress,
              IsReadViolation ? "READ " : "",
              IsWriteViolation ? "WRITE" : "");
+
+      LogInfo("EPT hook: phys=0x%llx %s%s",
+              PhysicalAddress,
+              IsReadViolation ? "READ" : "",
+              IsWriteViolation ? "WRITE" : "");
 
       HvSetMonitorTrapFlag(true);
 

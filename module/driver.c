@@ -128,6 +128,33 @@ static long dev_ioctl(struct file *filep, unsigned int cmd, unsigned long arg) {
     break;
   }
 
+  case IOCTL_TEST_LOG: {
+    AsmVmxVmcall(VMCALL_LOG_MESSAGE, arg, 0xCAFE, 0xBABE);
+    ret = 0;
+    break;
+  }
+
+  case IOCTL_TEST_HOOK_RW: {
+    void *page = get_test_page();
+    AsmVmxVmcall(VMCALL_HIDDEN_HOOK, (uint64_t)page, 0, 0);
+    ret = 0;
+    break;
+  }
+
+  case IOCTL_TEST_HOOK_TRIGGER: {
+    volatile char *p = (volatile char *)get_test_page();
+    *p = 0x42;
+    ret = 0;
+    break;
+  }
+
+  case IOCTL_TEST_HOOK_UNINSTALL: {
+    void *page = get_test_page();
+    AsmVmxVmcall(VMCALL_UNHIDE_PAGE, (uint64_t)page, 0, 0);
+    ret = 0;
+    break;
+  }
+
   default:
     printk(KERN_WARNING "[*] Hyperion: unrecognized IOCTL 0x%x\n", cmd);
     ret = -ENOTTY;
