@@ -951,6 +951,42 @@ void VmxVmxoff(void) {
   vmread(GUEST_CR3, &GuestCr3);
   asm volatile("mov %0, %%cr3" :: "r"(GuestCr3) : "memory");
 
+  {
+    uint64_t GdtrBase, GdtrLimit;
+    uint64_t IdtrBase, IdtrLimit;
+    uint64_t FsBase, GsBase;
+
+    vmread(GUEST_GDTR_BASE, &GdtrBase);
+    vmread(GUEST_GDTR_LIMIT, &GdtrLimit);
+    vmread(GUEST_IDTR_BASE, &IdtrBase);
+    vmread(GUEST_IDTR_LIMIT, &IdtrLimit);
+    vmread(GUEST_FS_BASE, &FsBase);
+    vmread(GUEST_GS_BASE, &GsBase);
+
+    struct {
+      uint16_t limit;
+      uint64_t base;
+    } __attribute__((packed)) gdtr = {
+      .limit = (uint16_t)GdtrLimit,
+      .base = GdtrBase
+    };
+    asm volatile("lgdt %0" :: "m"(gdtr) : "memory");
+
+    struct {
+      uint16_t limit;
+      uint64_t base;
+    } __attribute__((packed)) idtr = {
+      .limit = (uint16_t)IdtrLimit,
+      .base = IdtrBase
+    };
+    asm volatile("lidt %0" :: "m"(idtr) : "memory");
+
+    wrmsrl(MSR_FS_BASE, FsBase);
+    wrmsrl(MSR_GS_BASE, GsBase);
+
+    pr_info("[*] Hyperion: GDTR/IDTR/FS/GS restored\n");
+  }
+
   vmread(GUEST_RIP, &GuestRIP);
   vmread(GUEST_RSP, &GuestRSP);
   vmread(VM_EXIT_INSTRUCTION_LEN, &ExitInstructionLength);
