@@ -819,6 +819,21 @@ static void HandleMSRWrite(PGUEST_REGS GuestRegs) {
   }
 }
 
+static void HandleControlRegisterAccess(PGUEST_REGS GuestState);
+
+void HvSetMonitorTrapFlag(bool Enable) {
+  uint64_t CpuBasedVmExecControls = 0;
+
+  vmread(CPU_BASED_VM_EXEC_CONTROL, &CpuBasedVmExecControls);
+
+  if (Enable)
+    CpuBasedVmExecControls |= CPU_BASED_MONITOR_TRAP_FLAG;
+  else
+    CpuBasedVmExecControls &= ~CPU_BASED_MONITOR_TRAP_FLAG;
+
+  vmwrite(CPU_BASED_VM_EXEC_CONTROL, CpuBasedVmExecControls);
+}
+
 static void HandleControlRegisterAccess(PGUEST_REGS GuestState) {
   uint64_t ExitQualification = 0;
   uint64_t ControlRegister, AccessType, RegisterIndex;
@@ -1087,6 +1102,14 @@ uint8_t main_vmexit_handler(uint64_t *guest_regs) {
   case EXIT_REASON_RDTSCP:
     resume_to_next_instruction();
     break;
+
+  case EXIT_REASON_MONITOR_TRAP_FLAG: {
+    EptHandleMonitorTrapFlag();
+    HvSetMonitorTrapFlag(false);
+
+    g_guest_state[smp_processor_id()].increment_rip = false;
+    break;
+  }
 
   case EXIT_REASON_VMCALL: {
     GuestRegs->rax = VmxVmcallHandler(GuestRegs->rdi, GuestRegs->rsi,

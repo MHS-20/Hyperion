@@ -273,4 +273,26 @@ typedef struct {
 } EPT_STATE;
 
 extern EPT_STATE *g_ept_state;
+
+typedef struct _EPT_HOOKED_PAGE_DETAIL {
+  uint64_t PhysicalAddress;
+  uint64_t FakePagePhysAddress;
+  EPT_PML1_ENTRY OriginalEntry;
+  EPT_PML1_ENTRY HookedEntry;
+  void *HookFunction;
+  void *OrigFunction;
+  bool HookedForRead;
+  bool HookedForWrite;
+  bool HookedForExecute;
+  struct list_head HookedPagesList;
+} EPT_HOOKED_PAGE_DETAIL;
+
+void EptHandleMonitorTrapFlag(void);
+bool EptHandleHookedPage(uint64_t PhysicalAddress, uint64_t GuestRip,
+                         bool IsReadViolation, bool IsWriteViolation,
+                         bool IsExecuteViolation);
+bool EptPerformPageHook(void *TargetFunction, void *HookFunction,
+                        void **OrigFunction, bool HookRead,
+                        bool HookWrite, bool HookExecute);
+bool EptPageUnHookSinglePage(void *TargetFunction);
 #endif

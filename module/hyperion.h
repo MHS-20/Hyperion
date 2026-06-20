@@ -105,6 +105,15 @@ bool clear_vmcs_state(struct virtual_machine_state *guest_state);
 
 uint64_t initialize_eptp(void);
 bool EptLogicalProcessorInitialize(void);
+void HvSetMonitorTrapFlag(bool Enable);
+void EptHandleMonitorTrapFlag(void);
+bool EptHandleHookedPage(uint64_t PhysicalAddress, uint64_t GuestRip,
+                         bool IsReadViolation, bool IsWriteViolation,
+                         bool IsExecuteViolation);
+bool EptPerformPageHook(void *TargetFunction, void *HookFunction,
+                        void **OrigFunction, bool HookRead,
+                        bool HookWrite, bool HookExecute);
+bool EptPageUnHookSinglePage(void *TargetFunction);
 bool EptPageHook(void *TargetFunc, bool HasLaunched);
 #ifdef __KERNEL__
 EPT_PML2_ENTRY *EptGetPml2Entry(VMM_EPT_PAGE_TABLE *EptPageTable,

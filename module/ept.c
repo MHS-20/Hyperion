@@ -375,10 +375,240 @@ bool EptHandleEptViolation(uint64_t ExitQualification,
   VMX_EXIT_QUALIFICATION_EPT_VIOLATION qual;
   qual.all = ExitQualification;
 
+  if (EptHandleHookedPage(GuestPhysicalAddr &
+                          ~(PAGE_SIZE - 1),
+                          0,
+                          !qual.fields.ept_readable &&
+                          qual.fields.read_access,
+                          !qual.fields.ept_writable &&
+                          qual.fields.write_access,
+                          !qual.fields.ept_executable &&
+                          qual.fields.execute_access))
+    return true;
+
   if (EptHandlePageHookExit(qual, GuestPhysicalAddr))
     return true;
 
   return false;
+}
+
+static void EptHookWriteAbsoluteJump(void *Destination, uint64_t TargetAddress) {
+  uint8_t *Buffer = (uint8_t *)Destination;
+
+  Buffer[0] = 0x49;
+  Buffer[1] = 0xBF;
+  memcpy(&Buffer[2], &TargetAddress, sizeof(uint64_t));
+
+  Buffer[10] = 0x41;
+  Buffer[11] = 0x57;
+
+  Buffer[12] = 0xC3;
+}
+
+static void EptSetPML1AndInvalidateTLB(EPT_PML1_ENTRY *Entry,
+                                       EPT_PML1_ENTRY NewValue) {
+  Entry->all = NewValue.all;
+  InveptSingleContext(g_ept_state->EptPointer.all);
+}
+
+static LIST_HEAD(g_HookedPagesList);
+
+bool EptPerformPageHook(void *TargetFunction, void *HookFunction,
+                        void **OrigFunction, bool HookRead,
+                        bool HookWrite, bool HookExecute) {
+  int CurrentCoreIndex = smp_processor_id();
+  void *VirtualTarget = (void *)((uintptr_t)TargetFunction & ~(PAGE_SIZE - 1));
+  uint64_t PhysicalAddress = virtual_to_physical(VirtualTarget);
+  EPT_HOOKED_PAGE_DETAIL *HookDetail;
+  EPT_PML1_ENTRY *TargetEntry;
+  EPT_PML1_ENTRY OriginalEntry;
+  void *FakePage;
+
+  HookDetail = kmalloc(sizeof(EPT_HOOKED_PAGE_DETAIL), GFP_KERNEL);
+  if (!HookDetail) {
+    pr_err("[*] Hyperion: failed to allocate hook detail\n");
+    return false;
+  }
+  memset(HookDetail, 0, sizeof(EPT_HOOKED_PAGE_DETAIL));
+
+  void *PreAllocBuffer = g_guest_state[CurrentCoreIndex].pre_allocated_buffer;
+  if (!EptSplitLargePage(g_ept_state->EptPageTable, PreAllocBuffer,
+                         PhysicalAddress, CurrentCoreIndex)) {
+    pr_err("[*] Hyperion: failed to split page for hook\n");
+    kfree(HookDetail);
+    return false;
+  }
+
+  TargetEntry = EptGetPml1Entry(g_ept_state->EptPageTable, PhysicalAddress);
+  if (!TargetEntry) {
+    pr_err("[*] Hyperion: failed to get PML1 entry\n");
+    kfree(HookDetail);
+    return false;
+  }
+
+  OriginalEntry = *TargetEntry;
+
+  if (HookExecute) {
+    FakePage = kmalloc(PAGE_SIZE, GFP_KERNEL);
+    if (!FakePage) {
+      pr_err("[*] Hyperion: failed to allocate fake page\n");
+      kfree(HookDetail);
+      return false;
+    }
+
+    phys_addr_t OrigPhys = TargetEntry->fields.physical_address * PAGE_SIZE;
+    void *OrigVirt = physical_to_virtual(OrigPhys);
+    memcpy(FakePage, OrigVirt, PAGE_SIZE);
+
+    uint64_t OffsetInPage = (uint64_t)TargetFunction - (uint64_t)VirtualTarget;
+    EptHookWriteAbsoluteJump((uint8_t *)FakePage + OffsetInPage,
+                              (uint64_t)HookFunction);
+
+    EPT_PML1_ENTRY FakeEntry = OriginalEntry;
+    FakeEntry.fields.physical_address =
+        virtual_to_physical(FakePage) / PAGE_SIZE;
+    FakeEntry.fields.read = 0;
+    FakeEntry.fields.write = 0;
+    FakeEntry.fields.execute = 1;
+
+    HookDetail->FakePagePhysAddress = virtual_to_physical(FakePage);
+
+    EptSetPML1AndInvalidateTLB(TargetEntry, FakeEntry);
+
+    if (OrigFunction)
+      *OrigFunction = TargetFunction;
+  } else {
+    EPT_PML1_ENTRY HookEntry = OriginalEntry;
+    HookEntry.fields.read = HookRead ? 0 : 1;
+    HookEntry.fields.write = HookWrite ? 0 : 1;
+
+    HookDetail->HookedEntry = HookEntry;
+    EptSetPML1AndInvalidateTLB(TargetEntry, HookEntry);
+  }
+
+  HookDetail->PhysicalAddress = PhysicalAddress;
+  HookDetail->OriginalEntry = OriginalEntry;
+  HookDetail->HookFunction = HookFunction;
+  HookDetail->OrigFunction = TargetFunction;
+  HookDetail->HookedForRead = HookRead;
+  HookDetail->HookedForWrite = HookWrite;
+  HookDetail->HookedForExecute = HookExecute;
+
+  list_add(&HookDetail->HookedPagesList, &g_HookedPagesList);
+
+  printk(KERN_INFO "[*] Hyperion: hook applied at phys=0x%llx "
+                   "(R=%d W=%d X=%d)\n",
+         PhysicalAddress, HookRead, HookWrite, HookExecute);
+  return true;
+}
+
+bool EptHandleHookedPage(uint64_t PhysicalAddress, uint64_t GuestRip,
+                         bool IsReadViolation, bool IsWriteViolation,
+                         bool IsExecuteViolation) {
+  EPT_HOOKED_PAGE_DETAIL *HookDetail;
+  EPT_PML1_ENTRY *TargetEntry;
+
+  list_for_each_entry(HookDetail, &g_HookedPagesList, HookedPagesList) {
+    if (HookDetail->PhysicalAddress != PhysicalAddress)
+      continue;
+
+    TargetEntry = EptGetPml1Entry(g_ept_state->EptPageTable,
+                                   PhysicalAddress);
+    if (!TargetEntry)
+      continue;
+
+    if (HookDetail->HookedForExecute) {
+      if (IsReadViolation || IsWriteViolation) {
+        EptSetPML1AndInvalidateTLB(TargetEntry,
+                                    HookDetail->OriginalEntry);
+
+        printk(KERN_INFO "[*] Hyperion: hidden hook trigger — "
+                         "RIP=0x%llx phys=0x%llx %s\n",
+               GuestRip, PhysicalAddress,
+               IsReadViolation ? "READ" : "WRITE");
+
+        return true;
+      }
+      if (IsExecuteViolation) {
+        EPT_PML1_ENTRY TempEntry = HookDetail->HookedEntry;
+        TempEntry.fields.execute = 1;
+        EptSetPML1AndInvalidateTLB(TargetEntry, TempEntry);
+
+        g_guest_state[smp_processor_id()].increment_rip = false;
+        return true;
+      }
+    } else {
+      EptSetPML1AndInvalidateTLB(TargetEntry,
+                                  HookDetail->OriginalEntry);
+
+      printk(KERN_INFO "[*] Hyperion: hidden hook trigger — "
+                       "RIP=0x%llx phys=0x%llx %s%s\n",
+             GuestRip, PhysicalAddress,
+             IsReadViolation ? "READ " : "",
+             IsWriteViolation ? "WRITE" : "");
+
+      HvSetMonitorTrapFlag(true);
+
+      g_guest_state[smp_processor_id()].increment_rip = false;
+      return true;
+    }
+  }
+
+  return false;
+}
+
+void EptHandleMonitorTrapFlag(void) {
+  EPT_HOOKED_PAGE_DETAIL *HookDetail;
+
+  list_for_each_entry(HookDetail, &g_HookedPagesList, HookedPagesList) {
+    EPT_PML1_ENTRY *TargetEntry;
+
+    TargetEntry = EptGetPml1Entry(g_ept_state->EptPageTable,
+                                   HookDetail->PhysicalAddress);
+    if (!TargetEntry)
+      continue;
+
+    if (!HookDetail->HookedForExecute) {
+      EptSetPML1AndInvalidateTLB(TargetEntry,
+                                  HookDetail->HookedEntry);
+    }
+  }
+}
+
+bool EptPageUnHookSinglePage(void *TargetFunction) {
+  void *VirtualTarget = (void *)((uintptr_t)TargetFunction & ~(PAGE_SIZE - 1));
+  uint64_t PhysicalAddress = virtual_to_physical(VirtualTarget);
+  EPT_HOOKED_PAGE_DETAIL *HookDetail, *Temp;
+  bool Found = false;
+
+  list_for_each_entry_safe(HookDetail, Temp, &g_HookedPagesList,
+                            HookedPagesList) {
+    if (HookDetail->PhysicalAddress == PhysicalAddress) {
+      EPT_PML1_ENTRY *TargetEntry;
+
+      TargetEntry = EptGetPml1Entry(g_ept_state->EptPageTable,
+                                     PhysicalAddress);
+      if (TargetEntry) {
+        EptSetPML1AndInvalidateTLB(TargetEntry,
+                                    HookDetail->OriginalEntry);
+      }
+
+      list_del(&HookDetail->HookedPagesList);
+
+      if (HookDetail->FakePagePhysAddress) {
+        void *FakeVirt = physical_to_virtual(
+            HookDetail->FakePagePhysAddress);
+        kfree(FakeVirt);
+      }
+
+      kfree(HookDetail);
+      Found = true;
+      printk(KERN_INFO "[*] Hyperion: hook removed at phys=0x%llx\n",
+             PhysicalAddress);
+    }
+  }
+
+  return Found;
 }
 
 /* --- INVEPT and cache invalidation --- */
