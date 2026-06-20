@@ -123,3 +123,27 @@ typedef union _VMX_EXIT_QUALIFICATION_EPT_VIOLATION {
     uint64_t reserved2             : 51;
   } fields;
 } VMX_EXIT_QUALIFICATION_EPT_VIOLATION;
+
+#define LOG_BUFFER_MAX_PACKETS   1000
+#define LOG_BUFFER_PACKET_SIZE   256
+#define LOG_BUFFER_TOTAL_SIZE    (LOG_BUFFER_MAX_PACKETS * \
+                                  (LOG_BUFFER_PACKET_SIZE + sizeof(BUFFER_HEADER)))
+
+typedef struct _BUFFER_HEADER {
+  uint32_t OperationCode;
+  uint32_t BufferLength;
+  volatile uint32_t Valid;
+  uint32_t Reserved;
+} BUFFER_HEADER;
+
+#define OPERATION_LOG_INFO    1
+#define OPERATION_LOG_WARNING 2
+#define OPERATION_LOG_ERROR   3
+
+typedef struct _LOG_BUFFER_POOL {
+  void *BufferStartAddress;
+  void *BufferEndAddress;
+  volatile int CurrentIndexToWrite;
+  volatile int CurrentIndexToSend;
+  volatile unsigned long BufferLock;
+} LOG_BUFFER_POOL;

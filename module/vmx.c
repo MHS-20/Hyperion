@@ -7,6 +7,7 @@
 #include <linux/slab.h>
 #include <linux/smp.h>
 #include <linux/list.h>
+#include <linux/uaccess.h>
 
 #define VMM_STACK_SIZE (PAGE_SIZE * 2)
 
@@ -35,6 +36,7 @@ static bool setup_vmcs(struct virtual_machine_state *guest_state,
 static void
 SetupVmcsAndVirtualizeMachine(struct virtual_machine_state *guest_state,
                               uint64_t EPTP, void *GuestStack);
+static bool LogInitialize(void);
 
 /* IA32_FEATURE_CONTROL MSR layout */
 union ia32_feature_control_msr {
@@ -165,6 +167,8 @@ bool initialize_vmx(void) {
    * to avoid a race condition where multiple CPUs try to build
    * the MTRR map and allocate the EPT table simultaneously. */
   initialize_eptp();
+
+  LogInitialize();
 
   /* Phase 1: setup VMXON/VMCS/VMM stack/MSR bitmap on all CPUs */
   on_each_cpu(vmx_init_on_cpu, NULL, 1);
@@ -1071,6 +1075,120 @@ static bool HandleCPUID(PGUEST_REGS state) {
   state->rdx = CpuInfo[3];
 
   return false;
+}
+
+static LOG_BUFFER_POOL g_LogPool;
+
+static bool LogInitialize(void) {
+  void *Buffer;
+
+  Buffer = kmalloc(LOG_BUFFER_TOTAL_SIZE, GFP_KERNEL);
+  if (!Buffer) {
+    pr_err("[*] Hyperion: failed to allocate log buffer\n");
+    return false;
+  }
+  memset(Buffer, 0, LOG_BUFFER_TOTAL_SIZE);
+
+  g_LogPool.BufferStartAddress = Buffer;
+  g_LogPool.BufferEndAddress = (uint8_t *)Buffer + LOG_BUFFER_TOTAL_SIZE;
+  g_LogPool.CurrentIndexToWrite = 0;
+  g_LogPool.CurrentIndexToSend = 0;
+  g_LogPool.BufferLock = 0;
+
+  pr_info("[*] Hyperion: log buffer initialized (%d packets)\n",
+          LOG_BUFFER_MAX_PACKETS);
+  return true;
+}
+
+static void LogSendBuffer(uint32_t OperationCode, void *Buffer,
+                          uint32_t BufferLength) {
+  BUFFER_HEADER *Header;
+  void *Destination;
+  int Index;
+
+  while (test_and_set_bit(0, &g_LogPool.BufferLock))
+    cpu_relax();
+
+  Index = g_LogPool.CurrentIndexToWrite;
+
+  Destination = (uint8_t *)g_LogPool.BufferStartAddress +
+                Index * (LOG_BUFFER_PACKET_SIZE + sizeof(BUFFER_HEADER));
+
+  Header = (BUFFER_HEADER *)Destination;
+  Header->OperationCode = OperationCode;
+  Header->BufferLength = BufferLength;
+
+  if (Buffer && BufferLength > 0 && BufferLength <= LOG_BUFFER_PACKET_SIZE) {
+    memcpy((uint8_t *)Destination + sizeof(BUFFER_HEADER),
+           Buffer, BufferLength);
+  }
+
+  smp_wmb();
+  Header->Valid = 1;
+
+  g_LogPool.CurrentIndexToWrite =
+      (Index + 1) % LOG_BUFFER_MAX_PACKETS;
+
+  smp_wmb();
+  clear_bit(0, &g_LogPool.BufferLock);
+}
+
+int LogReadBuffer(void __user *UserBuffer, uint32_t UserBufferSize,
+                  uint32_t *BytesWritten) {
+  BUFFER_HEADER *Header;
+  void *Source;
+  int Index;
+  int CopySize = 0;
+
+  *BytesWritten = 0;
+
+  while (test_and_set_bit(0, &g_LogPool.BufferLock))
+    cpu_relax();
+
+  Index = g_LogPool.CurrentIndexToSend;
+
+  Source = (uint8_t *)g_LogPool.BufferStartAddress +
+           Index * (LOG_BUFFER_PACKET_SIZE + sizeof(BUFFER_HEADER));
+
+  Header = (BUFFER_HEADER *)Source;
+
+  smp_rmb();
+  if (Header->Valid) {
+    uint32_t TotalSize = sizeof(uint32_t) + Header->BufferLength;
+    if (TotalSize <= UserBufferSize) {
+      if (copy_to_user(UserBuffer, &Header->OperationCode,
+                       sizeof(uint32_t)) == 0 &&
+          copy_to_user(UserBuffer + sizeof(uint32_t),
+                       (uint8_t *)Source + sizeof(BUFFER_HEADER),
+                       Header->BufferLength) == 0) {
+        CopySize = TotalSize;
+      }
+    }
+
+    Header->Valid = 0;
+    Header->BufferLength = 0;
+
+    g_LogPool.CurrentIndexToSend =
+        (Index + 1) % LOG_BUFFER_MAX_PACKETS;
+  }
+
+  clear_bit(0, &g_LogPool.BufferLock);
+
+  *BytesWritten = CopySize;
+  return CopySize > 0 ? 0 : -EAGAIN;
+}
+
+static void LogInfo(const char *Format, ...) {
+  char Buffer[LOG_BUFFER_PACKET_SIZE];
+  va_list Args;
+  int Length;
+
+  va_start(Args, Format);
+  Length = vsnprintf(Buffer, sizeof(Buffer), Format, Args);
+  va_end(Args);
+
+  if (Length > 0 && Length < LOG_BUFFER_PACKET_SIZE)
+    LogSendBuffer(OPERATION_LOG_INFO, Buffer, Length + 1);
 }
 
 /*

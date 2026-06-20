@@ -118,6 +118,16 @@ static long dev_ioctl(struct file *filep, unsigned int cmd, unsigned long arg) {
     break;
   }
 
+  case IOCTL_READ_LOG_BUFFER: {
+    uint32_t BytesWritten = 0;
+    int result = LogReadBuffer((void __user *)arg, PAGE_SIZE, &BytesWritten);
+    if (result == 0)
+      ret = BytesWritten;
+    else
+      ret = result;
+    break;
+  }
+
   default:
     printk(KERN_WARNING "[*] Hyperion: unrecognized IOCTL 0x%x\n", cmd);
     ret = -ENOTTY;

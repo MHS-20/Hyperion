@@ -7,6 +7,10 @@
 #include <unistd.h>
 #define DEVICE_PATH "/dev/hyperion"
 
+#define OPERATION_LOG_INFO 1
+#define OPERATION_LOG_WARNING 2
+#define OPERATION_LOG_ERROR 3
+
 void get_cpu_vendor(char *vendor) {
   uint32_t ebx, ecx, edx;
 

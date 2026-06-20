@@ -23,6 +23,8 @@ uint64_t virtual_to_physical(void *va);
 /* Example: send a buffer to the kernel */
 #define IOCTL_SEND_BUFFER _IOW(HYPERION_MAGIC, 2, unsigned long)
 
+#define IOCTL_READ_LOG_BUFFER _IOR(HYPERION_MAGIC, 3, unsigned long)
+
 typedef struct {
   bool     is_vmxoff_executed;
   uint64_t guest_rip;
@@ -114,6 +116,10 @@ bool EptPerformPageHook(void *TargetFunction, void *HookFunction,
                         void **OrigFunction, bool HookRead,
                         bool HookWrite, bool HookExecute);
 bool EptPageUnHookSinglePage(void *TargetFunction);
+#ifdef __KERNEL__
+int LogReadBuffer(void __user *UserBuffer, uint32_t UserBufferSize,
+                  uint32_t *BytesWritten);
+#endif
 bool EptPageHook(void *TargetFunc, bool HasLaunched);
 #ifdef __KERNEL__
 EPT_PML2_ENTRY *EptGetPml2Entry(VMM_EPT_PAGE_TABLE *EptPageTable,
