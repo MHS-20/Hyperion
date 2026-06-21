@@ -54,7 +54,7 @@ static int dev_open(struct inode *inodep, struct file *filep) {
 
 /* Called when userspace closes /dev/my_hypervisor */
 static int dev_release(struct inode *inodep, struct file *filep) {
-  terminate_vmx();
+  HvTerminateVmx();
   printk(KERN_INFO "Hyperion: device closed\n");
   return 0;
 }
@@ -155,6 +155,30 @@ static long dev_ioctl(struct file *filep, unsigned int cmd, unsigned long arg) {
     break;
   }
 
+  case IOCTL_TEST_EVENT_INJECTION: {
+    AsmVmxVmcall(VMCALL_TEST_EVENT_INJECTION, 0, 0, 0);
+    ret = 0;
+    break;
+  }
+
+  case IOCTL_TEST_EXEC_HOOK: {
+    AsmVmxVmcall(VMCALL_TEST_EXEC_HOOK, 0, 0, 0);
+    ret = 0;
+    break;
+  }
+
+  case IOCTL_TEST_SYSCALL_HOOK: {
+    AsmVmxVmcall(VMCALL_TEST_SYSCALL_HOOK, 0, 0, 0);
+    ret = 0;
+    break;
+  }
+
+  case IOCTL_TEST_VPID: {
+    AsmVmxVmcall(VMCALL_TEST_VPID, 0, 0, 0);
+    ret = 0;
+    break;
+  }
+
   default:
     printk(KERN_WARNING "[*] Hyperion: unrecognized IOCTL 0x%x\n", cmd);
     ret = -ENOTTY;
@@ -199,7 +223,7 @@ static int __init hypervisor_init(void) {
 
 /* Equivalent to DrvUnload */
 static void __exit hypervisor_exit(void) {
-  terminate_vmx();
+  HvTerminateVmx();
   device_destroy(hypervisor_class, MKDEV(major_number, 0));
   class_unregister(hypervisor_class);
   class_destroy(hypervisor_class);

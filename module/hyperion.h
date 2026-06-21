@@ -29,6 +29,10 @@ uint64_t virtual_to_physical(void *va);
 #define IOCTL_TEST_HOOK_RW      _IO(HYPERION_MAGIC, 11)
 #define IOCTL_TEST_HOOK_TRIGGER _IO(HYPERION_MAGIC, 12)
 #define IOCTL_TEST_HOOK_UNINSTALL _IO(HYPERION_MAGIC, 13)
+#define IOCTL_TEST_EVENT_INJECTION _IO(HYPERION_MAGIC, 14)
+#define IOCTL_TEST_EXEC_HOOK    _IO(HYPERION_MAGIC, 15)
+#define IOCTL_TEST_SYSCALL_HOOK _IO(HYPERION_MAGIC, 16)
+#define IOCTL_TEST_VPID         _IO(HYPERION_MAGIC, 17)
 
 typedef struct {
   bool     is_vmxoff_executed;
@@ -45,6 +49,10 @@ typedef struct {
 #define VMCALL_HIDDEN_HOOK             0x10
 #define VMCALL_UNHIDE_PAGE             0x11
 #define VMCALL_LOG_MESSAGE             0x12
+#define VMCALL_TEST_EVENT_INJECTION    0x13
+#define VMCALL_TEST_EXEC_HOOK          0x14
+#define VMCALL_TEST_SYSCALL_HOOK       0x15
+#define VMCALL_TEST_VPID               0x16
 
 struct virtual_machine_state {
   /* Physical addresses of the VMXON and VMCS regions */
@@ -129,6 +137,10 @@ int LogReadBuffer(void __user *UserBuffer, uint32_t UserBufferSize,
                   uint32_t *BytesWritten);
 void *get_test_page(void);
 void LogInfo(const char *Format, ...);
+bool TestBreakpointInterception(void);
+bool TestExecHook(void);
+bool TestSyscallHook(void);
+bool TestVpidManagement(void);
 #endif
 bool EptPageHook(void *TargetFunc, bool HasLaunched);
 #ifdef __KERNEL__
@@ -146,6 +158,8 @@ uint8_t Invept(uint32_t Type, INVEPT_DESCRIPTOR *Descriptor);
 uint8_t InveptAllContexts(void);
 uint8_t InveptSingleContext(uint64_t EptPointer);
 uint8_t InvvpidSingleContext(uint16_t VPID);
+uint8_t InvvpidAllContexts(void);
+uint8_t InvvpidIndividualAddress(uint16_t VPID, uint64_t LinearAddress);
 void HvNotifyAllToInvalidateEpt(void);
 
 uint64_t vmptrst_instruction(void);

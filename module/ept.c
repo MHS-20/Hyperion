@@ -6,9 +6,9 @@
 #include <linux/smp.h>
 #include <linux/moduleparam.h>
 
-static bool g_enable_ept;
+static bool g_enable_ept = true;
 module_param_named(enable_ept, g_enable_ept, bool, 0644);
-MODULE_PARM_DESC(enable_ept, "Enable Extended Page Tables (default: false)");
+MODULE_PARM_DESC(enable_ept, "Enable Extended Page Tables (default: true)");
 
 #ifndef MSR_IA32_MTRR_CAPABILITIES
 #define MSR_IA32_MTRR_CAPABILITIES 0xFE
@@ -48,13 +48,24 @@ static void EptSetupPML2Entry(EPT_PML2_ENTRY *NewEntry,
     }
   }
 
-  /* For 2MB large pages, memory type is at bits 5:3 and ignore_pat
-   * is at bit 6, both within the reserved1 field.  Bit 7 must be 1. */
+  /*
+   * Fallback for systems with no MTRR variable ranges:
+   * mark known MMIO regions as uncacheable to prevent hangs.
+   */
+  if (g_mtrr_range_count == 0) {
+    /* Traditional VGA/ROM hole: 0xA0000 - 0xFFFFF */
+    if (AddressOfPage >= 0xA0000 && AddressOfPage < 0x100000)
+      TargetMemoryType = MEMORY_TYPE_UNCACHEABLE;
+    /* APIC, IOAPIC, and PCI MMIO: >= 4GB - 256MB */
+    else if (AddressOfPage >= 0xF0000000ULL)
+      TargetMemoryType = MEMORY_TYPE_UNCACHEABLE;
+  }
+
   NewEntry->fields.page_frame_number = PageFrameNumber;
-  NewEntry->fields.memory_type = 0;  /* not used for large pages */
-  NewEntry->fields.ignore_pat = 0;   /* not used for large pages */
+  NewEntry->fields.memory_type = 0;
+  NewEntry->fields.ignore_pat = 0;
   NewEntry->fields.reserved1 =
-      (1 << 4) | TargetMemoryType; /* bit 7=1, bits 5:3=memory_type */
+      (1 << 4) | TargetMemoryType;
 }
 
 static VMM_EPT_PAGE_TABLE *EptAllocateAndCreateIdentityPageTable(void) {

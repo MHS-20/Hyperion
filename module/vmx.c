@@ -9,6 +9,7 @@
 #include <linux/list.h>
 #include <linux/uaccess.h>
 #include <linux/kallsyms.h>
+#include <linux/version.h>
 
 #define VMM_STACK_SIZE (PAGE_SIZE * 2)
 
@@ -938,8 +939,10 @@ int VmxVmcallHandler(uint64_t VmcallNumber, uint64_t OptionalParam1,
     VmcallStatus = 0;
     break;
   case VMCALL_EXEC_HOOK_PAGE:
-    if (EptVmxRootModePageHook((void *)OptionalParam1, true))
-      VmcallStatus = 0;
+    if (g_ept_state)
+      VmcallStatus = EptVmxRootModePageHook((void *)OptionalParam1, true) ? 0 : -1;
+    else
+      VmcallStatus = -1;
     break;
   case VMCALL_INVEPT_SINGLE_CONTEXT:
     InveptSingleContext(OptionalParam1);
@@ -950,15 +953,33 @@ int VmxVmcallHandler(uint64_t VmcallNumber, uint64_t OptionalParam1,
     VmcallStatus = 0;
     break;
   case VMCALL_HIDDEN_HOOK:
-    VmcallStatus = EptPerformPageHook((void *)OptionalParam1, NULL, NULL,
-                                       true, true, false) ? 0 : -1;
+    if (g_ept_state)
+      VmcallStatus = EptPerformPageHook((void *)OptionalParam1, NULL, NULL,
+                                         true, true, false) ? 0 : -1;
+    else
+      VmcallStatus = -1;
     break;
   case VMCALL_UNHIDE_PAGE:
-    VmcallStatus = EptPageUnHookSinglePage((void *)OptionalParam1) ? 0 : -1;
+    if (g_ept_state)
+      VmcallStatus = EptPageUnHookSinglePage((void *)OptionalParam1) ? 0 : -1;
+    else
+      VmcallStatus = -1;
     break;
   case VMCALL_LOG_MESSAGE:
     LogInfo("VMX-root: tag=0x%llx", OptionalParam1);
     VmcallStatus = 0;
+    break;
+  case VMCALL_TEST_EVENT_INJECTION:
+    VmcallStatus = TestBreakpointInterception() ? 0 : -1;
+    break;
+  case VMCALL_TEST_EXEC_HOOK:
+    VmcallStatus = TestExecHook() ? 0 : -1;
+    break;
+  case VMCALL_TEST_SYSCALL_HOOK:
+    VmcallStatus = TestSyscallHook() ? 0 : -1;
+    break;
+  case VMCALL_TEST_VPID:
+    VmcallStatus = TestVpidManagement() ? 0 : -1;
     break;
   default:
     VmcallStatus = 0;
@@ -1023,7 +1044,11 @@ void VmxVmxoff(void) {
   g_guest_state[cpu].vmxoff_state.guest_rsp = GuestRSP;
   g_guest_state[cpu].vmxoff_state.is_vmxoff_executed = true;
 
-  asm volatile("vmxoff" ::: "cc");
+  /*
+   * VMXOFF is executed by VmxoffHandler in exit_handler.S
+   * after main_vmexit_handler returns. Do NOT call VMXOFF here
+   * because it would be executed a second time, causing #UD.
+   */
 }
 
 uint64_t HvReturnStackPointerForVmxoff(void) {
@@ -1239,6 +1264,8 @@ static long SyscallOpenatHook(int dfd, const char __user *filename,
   return -ENOSYS;
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 7, 0)
+
 static unsigned long *g_sys_call_table = NULL;
 
 static bool SyscallHookFindTable(void) {
@@ -1286,6 +1313,121 @@ static int DemonstrateSyscallHook(void) {
 
   printk(KERN_INFO "[*] Hyperion: syscall hook applied on __x64_sys_openat\n");
   return 0;
+}
+
+#else /* LINUX_VERSION_CODE >= 5.7.0 */
+
+static bool SyscallHookFindTable(void) {
+  pr_err("[*] Hyperion: syscall hook requires kallsyms_lookup_name "
+          "(kernel < 5.7)\n");
+  return false;
+}
+
+static void *SyscallHookGetFunctionAddress(unsigned int SyscallNumber) {
+  (void)SyscallNumber;
+  return NULL;
+}
+
+static int DemonstrateSyscallHook(void) {
+  pr_err("[*] Hyperion: syscall hook unavailable on this kernel "
+          "(kallsyms_lookup_name not exported since 5.7)\n");
+  return -1;
+}
+
+#endif
+
+/*
+ * Test: Breakpoint Interception
+ * Sets the exception bitmap to intercept #BP and triggers an int3.
+ * The VM-exit handler logs the breakpoint and re-injects it so the guest
+ * handles it normally. The log message confirms interception.
+ */
+bool TestBreakpointInterception(void) {
+  printk(KERN_INFO "[*] Hyperion: breakpoint interception test — "
+                    "triggering int3\n");
+  /*
+   * Trigger a breakpoint. The exception bitmap (bit 3) is already set
+   * in setup_vmcs(), so this int3 will cause a VM-exit with
+   * EXIT_REASON_EXCEPTION_NMI.
+   * The handler logs "#BP at RIP=..." then re-injects the #BP.
+   */
+  asm volatile("int3");
+  return true;
+}
+
+/*
+ * Test: Hidden Execute Hook (kfree)
+ * Installs a hidden execute hook on kfree via EPT. All kfree() calls
+ * will be redirected through our hook function which logs the freed
+ * pointer, then calls the original kfree.
+ */
+static void (*g_OrigKfree)(const void *) = NULL;
+
+static void TestKfreeHook(const void *ptr) {
+  printk(KERN_INFO "[*] Hyperion: kfree(0x%px) hook triggered\n", ptr);
+
+  if (g_OrigKfree)
+    g_OrigKfree(ptr);
+}
+
+bool TestExecHook(void) {
+  void *Target = (void *)kfree;
+
+  if (!g_ept_state) {
+    pr_err("[*] Hyperion: EPT not initialized — cannot install execute hook\n");
+    return false;
+  }
+
+  if (EptPerformPageHook(Target, TestKfreeHook,
+                         (void **)&g_OrigKfree,
+                         false, false, true)) {
+    printk(KERN_INFO "[*] Hyperion: hidden execute hook installed on kfree "
+                      "(0x%px)\n", Target);
+    return true;
+  }
+
+  pr_err("[*] Hyperion: failed to install execute hook on kfree\n");
+  return false;
+}
+
+/*
+ * Test: Syscall Hook (openat)
+ * Uses EptPerformPageHook to redirect __x64_sys_openat through
+ * SyscallOpenatHook. Every openat() syscall in the system will be logged.
+ */
+bool TestSyscallHook(void) {
+  if (!g_ept_state) {
+    pr_err("[*] Hyperion: EPT not initialized — cannot install syscall hook\n");
+    return false;
+  }
+  return (DemonstrateSyscallHook() == 0);
+}
+
+/*
+ * Test: VPID-based TLB Management
+ * Exercises the VPID and INVVPID infrastructure:
+ *   1. Reads the current VPID from the VMCS
+ *   2. Performs an InvvpidSingleContext(1) to invalidate TLB for our guest
+ *   3. Performs an InvvpidAllContexts() to invalidate all VPID contexts
+ */
+bool TestVpidManagement(void) {
+  uint64_t current_vpid = 0;
+
+  vmread(VIRTUAL_PROCESSOR_ID, &current_vpid);
+  printk(KERN_INFO "[*] Hyperion: VPID test — current VPID = %llu\n",
+         current_vpid);
+
+  if (InvvpidSingleContext(1) == 0)
+    printk(KERN_INFO "[*] Hyperion: InvvpidSingleContext(1) succeeded\n");
+  else
+    printk(KERN_ERR "[*] Hyperion: InvvpidSingleContext(1) failed\n");
+
+  if (InvvpidAllContexts() == 0)
+    printk(KERN_INFO "[*] Hyperion: InvvpidAllContexts() succeeded\n");
+  else
+    printk(KERN_ERR "[*] Hyperion: InvvpidAllContexts() failed\n");
+
+  return true;
 }
 
 /*
